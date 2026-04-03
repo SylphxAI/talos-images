@@ -1,0 +1,5 @@
+# System extensions to include in the custom Talos image
+# Each entry is an OCI image reference pulled by the imager
+extensions:
+  - ghcr.io/siderolabs/kata-containers:3.26.0
+  - ghcr.io/sylphxai/talos-devmapper-pool:latest

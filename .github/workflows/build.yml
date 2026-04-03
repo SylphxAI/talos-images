@@ -1,0 +1,87 @@
+name: Build Talos Image
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: "Talos version (e.g. v1.12.6)"
+        default: "v1.12.6"
+        required: true
+
+env:
+  TALOS_VERSION: ${{ inputs.talos_version || 'v1.12.6' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install crane
+        run: |
+          curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz | tar -xz crane
+          sudo mv crane /usr/local/bin/
+
+      - name: Read extensions
+        id: ext
+        run: |
+          # Build --system-extension-image flags from extensions.yaml
+          FLAGS=""
+          while IFS= read -r line; do
+            ext=$(echo "$line" | sed 's/^  - //')
+            [ -z "$ext" ] && continue
+            FLAGS="$FLAGS --system-extension-image $ext"
+          done < <(grep '^ *- ' extensions.yaml)
+          echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
+          echo "Extensions: $FLAGS"
+
+      - name: Build metal image
+        run: |
+          mkdir -p /tmp/talos-out
+          docker run --rm -t \
+            -v /tmp/talos-out:/out \
+            --privileged \
+            ghcr.io/siderolabs/imager:${{ env.TALOS_VERSION }} metal \
+            ${{ steps.ext.outputs.flags }}
+          ls -lh /tmp/talos-out/
+
+      - name: Build installer image
+        run: |
+          mkdir -p /tmp/talos-installer
+          docker run --rm -t \
+            -v /tmp/talos-installer:/out \
+            --privileged \
+            ghcr.io/siderolabs/imager:${{ env.TALOS_VERSION }} installer \
+            ${{ steps.ext.outputs.flags }}
+          ls -lh /tmp/talos-installer/
+
+      - name: Push installer to GHCR
+        run: |
+          crane push /tmp/talos-installer/installer-amd64.tar \
+            ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}
+          echo "Pushed ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TALOS_VERSION }}
+          name: Talos ${{ env.TALOS_VERSION }}
+          body: |
+            Custom Talos image with extensions:
+            - `siderolabs/kata-containers:3.26.0`
+            - `sylphxai/talos-devmapper-pool:latest`
+
+            **Install**: `https://github.com/SylphxAI/talos-images/releases/download/${{ env.TALOS_VERSION }}/metal-amd64.raw.zst`
+            **Upgrade**: `ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}`
+          files: /tmp/talos-out/metal-amd64.raw.zst
+          make_latest: true
