@@ -35,7 +35,6 @@ jobs:
       - name: Read extensions
         id: ext
         run: |
-          # Build --system-extension-image flags from extensions.yaml
           FLAGS=""
           while IFS= read -r line; do
             ext=$(echo "$line" | sed 's/^  - //')
@@ -45,11 +44,15 @@ jobs:
           echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
           echo "Extensions: $FLAGS"
 
+      # Metal image needs loopback device support — use --privileged
+      # and ensure /dev is properly mounted
       - name: Build metal image
         run: |
+          sudo modprobe loop
           mkdir -p /tmp/talos-out
           docker run --rm -t \
             -v /tmp/talos-out:/out \
+            -v /dev:/dev \
             --privileged \
             ghcr.io/siderolabs/imager:${{ env.TALOS_VERSION }} metal \
             ${{ steps.ext.outputs.flags }}
@@ -69,7 +72,6 @@ jobs:
         run: |
           crane push /tmp/talos-installer/installer-amd64.tar \
             ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}
-          echo "Pushed ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -81,7 +83,7 @@ jobs:
             - `siderolabs/kata-containers:3.26.0`
             - `sylphxai/talos-devmapper-pool:latest`
 
-            **Install**: `https://github.com/SylphxAI/talos-images/releases/download/${{ env.TALOS_VERSION }}/metal-amd64.raw.zst`
+            **Install**: Download `metal-amd64.raw.zst` below
             **Upgrade**: `ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}`
           files: /tmp/talos-out/metal-amd64.raw.zst
           make_latest: true
