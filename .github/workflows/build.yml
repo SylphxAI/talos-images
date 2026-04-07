@@ -80,8 +80,7 @@ jobs:
           name: Talos ${{ env.TALOS_VERSION }}
           body: |
             Custom Talos image with extensions:
-            - `siderolabs/kata-containers:3.26.0`
-            - `sylphxai/talos-devmapper-pool:latest`
+            - `siderolabs/kata-containers:3.27.0`
 
             **Install**: Download `metal-amd64.raw.zst` below
             **Upgrade**: `ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}`

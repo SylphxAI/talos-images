@@ -1,5 +1,7 @@
 # System extensions to include in the custom Talos image
 # Each entry is an OCI image reference pulled by the imager
+#
+# Kata 3.27.0: latest Siderolabs extension (CLH VMM, virtiofsd, containerd shim)
+# devmapper-pool: REMOVED — using virtio-fs (shared_fs="virtio-fs"), no devmapper needed
 extensions:
-  - ghcr.io/siderolabs/kata-containers:3.26.0
-  - ghcr.io/sylphxai/talos-devmapper-pool:latest
+  - ghcr.io/siderolabs/kata-containers:3.27.0
