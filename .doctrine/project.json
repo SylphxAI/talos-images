@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "repo": "SylphxAI/talos-images",
+    "name": "talos-images",
+    "lifecycle": "active",
+    "layer": "integration",
+    "summary": "Custom Talos Linux image composition repository for declaring system extensions and publishing metal install artifacts plus GHCR installer images.",
+    "goals": [
+      "Declare the Talos system extension set used to build custom Talos images.",
+      "Build metal install artifacts and installer images from explicit Talos version and extension inputs.",
+      "Publish release and GHCR artifacts that downstream provisioning and upgrade systems can consume through documented references."
+    ],
+    "nonGoals": [
+      "Own individual system extension implementations, Talos Linux upstream behavior, or Sidero imager internals.",
+      "Own cluster rollout orchestration, node upgrade sequencing, or Kubernetes workload safety policy.",
+      "Publish enterprise doctrine, project manifest schema, org rulesets, rollout issue reconciliation, or shared CI and release policy."
+    ]
+  },
+  "boundaries": {
+    "owns": [
+      {
+        "name": "talos-image-extension-set",
+        "description": "The declared list of Talos system extension image references included in custom Talos image builds."
+      },
+      {
+        "name": "talos-image-build-workflow",
+        "description": "GitHub Actions workflow that runs the Talos imager, publishes release artifacts, and pushes installer images."
+      },
+      {
+        "name": "talos-image-artifact-surface",
+        "description": "GitHub Release and GHCR artifact references consumed by provisioning and upgrade workflows."
+      }
+    ],
+    "doesNotOwn": [
+      "System extension implementation details owned by their producer repositories.",
+      "Talos Linux upstream behavior, Sidero imager internals, cluster rollout orchestration, or workload safety policy.",
+      "Enterprise doctrine, project manifest schema, rollout issue reconciliation, org rulesets, or shared workflow implementation."
+    ],
+    "publicSurfaces": [
+      {
+        "type": "documentation",
+        "name": "Image README",
+        "location": "README.md"
+      },
+      {
+        "type": "manifest",
+        "name": "System extension set",
+        "location": "extensions.yaml"
+      },
+      {
+        "type": "workflow",
+        "name": "Talos image build workflow",
+        "location": ".github/workflows/build.yml"
+      },
+      {
+        "type": "manifest",
+        "name": "Project control-plane manifest",
+        "location": ".doctrine/project.json"
+      }
+    ],
+    "allowedDependencies": [
+      {
+        "repo": "SylphxAI/doctrine",
+        "surface": "project manifest schema, standards, and rollout audit",
+        "direction": "downward"
+      },
+      {
+        "repo": "SylphxAI/talos-devmapper-pool",
+        "surface": "published extension image reference only",
+        "direction": "peer-public"
+      },
+      {
+        "repo": "SylphxAI/talos-erofs",
+        "surface": "published extension image reference only",
+        "direction": "peer-public"
+      }
+    ],
+    "forbiddenCouplings": [
+      "Do not encode one cluster's rollout sequence, workload safety policy, or node upgrade procedure as hidden image-build behavior.",
+      "Do not consume sibling extension repositories through source paths instead of published image references.",
+      "Do not make this repository own extension implementation internals or downstream upgrade controllers.",
+      "Do not publish enterprise process policy from this repository instead of SylphxAI/doctrine."
+    ]
+  },
+  "documentation": {
+    "adr": {
+      "path": "docs/adr/",
+      "status": "planned"
+    },
+    "specs": {
+      "path": "extensions.yaml",
+      "status": "present"
+    },
+    "catalog": {
+      "path": ".doctrine/project.json",
+      "status": "present"
+    },
+    "runbooks": {
+      "path": "README.md",
+      "status": "present"
+    },
+    "generatedReferences": {
+      "path": "GitHub Releases and GHCR image metadata",
+      "status": "generated"
+    }
+  },
+  "delivery": {
+    "ciModel": "legacy-ci",
+    "requiredContexts": [],
+    "deployPath": "Main pushes and workflow dispatch run .github/workflows/build.yml to publish GitHub Release metal images and ghcr.io/sylphxai/talos-installer images.",
+    "productionProof": "Image changes require workflow success, GitHub Release artifact readback, GHCR installer image readback, and install or upgrade smoke evidence in the intended Talos environment.",
+    "recoveryClass": "runtime-rollback-only"
+  },
+  "adoption": {
+    "status": "baseline",
+    "gaps": [
+      {
+        "id": "pr-admission-missing",
+        "description": "Add pull-request and merge-group validation for Talos image build inputs before full central admission.",
+        "owner": "SylphxAI/talos-images",
+        "target": "Before full adoption"
+      },
+      {
+        "id": "artifact-proof-runbook-missing",
+        "description": "Document release artifact, installer image, and Talos install or upgrade readback required for image changes.",
+        "owner": "SylphxAI/talos-images",
+        "target": "Before production-grade image operation"
+      },
+      {
+        "id": "extension-compatibility-policy-missing",
+        "description": "Document how extension image references, Talos versions, and rollback compatibility are selected and verified.",
+        "owner": "SylphxAI/talos-images",
+        "target": "Before commercial-grade infrastructure operation"
+      }
+    ]
+  }
+}
