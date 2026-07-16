@@ -1,5 +1,10 @@
 # Talos Images
 
+<p align="center">
+  <img src="docs/banner.png" alt="talos-images banner" width="100%" />
+</p>
+
+
 Custom Talos Linux images for Sylphx Platform infrastructure.
 
 Combines the base Talos OS with system extensions:
