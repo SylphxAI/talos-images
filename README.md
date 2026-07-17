@@ -1,9 +1,8 @@
 # Talos Images
 
 <p align="center">
-  <img src="docs/banner.png" alt="talos-images banner" width="100%" />
+  <img src="https://mark.sylphx.com/api/v1/banner?type=constellation&theme=tokyonight&text=talos+images&desc=Custom+Talos+Linux+image+composition%3A+declares+system+extensions+and+publishes+m&height=200&animation=rise&credit=0" alt="talos-images — Sylphx Mark banner" width="100%" />
 </p>
-
 
 Custom Talos Linux images for Sylphx Platform infrastructure.
 
