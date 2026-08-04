@@ -14,7 +14,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     permissions:
       contents: write
       packages: write
