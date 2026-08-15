@@ -41,7 +41,7 @@ infrastructure controllers or runbooks.
   Release artifact, and GHCR installer image.
 - GitHub Releases expose `metal-amd64.raw.zst`.
 - GHCR exposes `ghcr.io/sylphxai/talos-installer:{version}`.
-- `.doctrine/project.json` is the machine-readable project manifest.
+-  is the machine-readable project manifest.
 
 ## Delivery
 
@@ -51,4 +51,4 @@ changes must include workflow success, release artifact readback, installer
 image readback, and install or upgrade smoke evidence in the intended Talos
 environment.
 
-The authoritative control-plane record is `.doctrine/project.json`.
+The authoritative control-plane record is .
