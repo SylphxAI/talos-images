@@ -5,12 +5,17 @@ on:
   workflow_dispatch:
     inputs:
       talos_version:
-        description: "Talos version (e.g. v1.12.6)"
-        default: "v1.12.6"
+        description: "Talos version (e.g. v1.14.1)"
+        default: "v1.14.1"
         required: true
+      kata_extension_image:
+        description: "Optional explicit Kata extension image (repo:tag@sha256:...). Empty = resolve from the Sidero factory catalog for talos_version."
+        default: ""
+        required: false
 
 env:
-  TALOS_VERSION: ${{ inputs.talos_version || 'v1.12.6' }}
+  TALOS_VERSION: ${{ inputs.talos_version || 'v1.14.1' }}
+  KATA_EXTENSION_IMAGE: ${{ inputs.kata_extension_image || '' }}
 
 jobs:
   build:
@@ -32,17 +37,34 @@ jobs:
           curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz | tar -xz crane
           sudo mv crane /usr/local/bin/
 
-      - name: Read extensions
+      - name: Resolve extensions
         id: ext
         run: |
+          set -euo pipefail
           FLAGS=""
-          while IFS= read -r line; do
-            ext=$(echo "$line" | sed 's/^  - //')
+          if [ -n "${KATA_EXTENSION_IMAGE}" ]; then
+            KATA_REF="${KATA_EXTENSION_IMAGE}"
+            echo "Using explicit kata_extension_image: ${KATA_REF}"
+          else
+            CATALOG="https://factory.talos.dev/version/${TALOS_VERSION}/extensions/official"
+            KATA_REF=$(curl -fsSL "${CATALOG}" | jq -r '
+              .[] | select(.name=="siderolabs/kata-containers")
+              | "\(.ref)@\(.digest)"' | head -1)
+            if [ -z "${KATA_REF}" ] || [ "${KATA_REF}" = "@" ]; then
+              echo "::error::no siderolabs/kata-containers in the factory catalog for ${TALOS_VERSION} (${CATALOG}); pass kata_extension_image explicitly"
+              exit 1
+            fi
+            echo "Resolved kata extension for ${TALOS_VERSION}: ${KATA_REF}"
+          fi
+          echo "ref=${KATA_REF}" >> "$GITHUB_OUTPUT"
+          # Any extra extensions declared in extensions.yaml (may be empty).
+          while IFS= read -r ext; do
             [ -z "$ext" ] && continue
-            FLAGS="$FLAGS --system-extension-image $ext"
-          done < <(grep '^ *- ' extensions.yaml)
-          echo "flags=$FLAGS" >> "$GITHUB_OUTPUT"
-          echo "Extensions: $FLAGS"
+            FLAGS="${FLAGS} --system-extension-image ${ext}"
+          done < <(sed -n 's/^ *- //p' extensions.yaml)
+          FLAGS="${FLAGS} --system-extension-image ${KATA_REF}"
+          echo "flags=${FLAGS}" >> "$GITHUB_OUTPUT"
+          echo "Extensions:${FLAGS}"
 
       # Metal image needs loopback device support — use --privileged
       # and ensure /dev is properly mounted
