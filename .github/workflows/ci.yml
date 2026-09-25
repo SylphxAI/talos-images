@@ -1,0 +1,54 @@
+name: CI
+
+# Checks a change before it lands. build.yml builds and publishes the image
+# on main; this checks what that build depends on, so a broken extension list
+# or Talos version fails here instead of on main. `ci-ok` is the one required
+# status check.
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Workflows pass actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+      - name: Extensions resolve for the default Talos version
+        run: |
+          set -euo pipefail
+          version=$(sed -n "s/.*inputs.talos_version || '\(v[0-9.]*\)'.*/\1/p" .github/workflows/build.yml | head -1)
+          [ -n "$version" ] || { echo "::error::no default talos_version in build.yml"; exit 1; }
+          catalog="https://factory.talos.dev/version/${version}/extensions/official"
+          kata=$(curl -fsSL "$catalog" | jq -r '.[] | select(.name=="siderolabs/kata-containers") | .ref' | head -1)
+          [ -n "$kata" ] || { echo "::error::no kata-containers extension for ${version} in ${catalog}"; exit 1; }
+          echo "Talos ${version}: kata ${kata}"
+          curl -sL https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz | tar -xz crane
+          while IFS= read -r ext; do
+            [ -z "$ext" ] && continue
+            ./crane digest "$ext" >/dev/null || { echo "::error::extension ${ext} does not resolve"; exit 1; }
+            echo "ok ${ext}"
+          done < <(sed -n 's/^ *- //p' extensions.yaml)
+
+  # The one required check: fails unless every job above succeeded.
+  ci-ok:
+    if: always()
+    needs: [check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: test "${{ needs.check.result }}" = success
