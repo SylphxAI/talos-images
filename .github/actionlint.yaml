@@ -1,0 +1,4 @@
+# Our own runner labels (all CI runs on them; owner standards/dx.md, owner#746).
+self-hosted-runner:
+  labels:
+    - sylphx-linux-standard
