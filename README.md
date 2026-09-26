@@ -1,7 +1,7 @@
 # Talos Images
 
 <p align="center">
-  <img src="https://mark.sylphx.com/api/v1/mark/hero?type=constellation&theme=tokyonight&text=talos+images&desc=Custom+Talos+Linux+image+composition%3A+declares+system+extensions+and+publishes+metal+install%E2%80%A6&height=200&animation=rise" alt="talos-images — Sylphx Mark banner" width="100%" />
+  <img src="https://mark.sylphx.com/api/v1/mark/hero.svg?type=aurora&theme=grape&text=talos-images&desc=Talos%20Linux%20images%20with%20Kata%20Containers" alt="talos-images" width="100%" />
 </p>
 
 [Talos Linux](https://www.talos.dev) images for bare-metal servers, built with
