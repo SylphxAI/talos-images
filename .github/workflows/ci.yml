@@ -17,11 +17,19 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
+      # All CI runs on our own runners; the GitHub budget is $0 (owner
+      # standards/dx.md, owner#746).
+      - name: No GitHub-hosted runner labels
+        run: |
+          if grep -rnE '(ubuntu|windows|macos)-(latest|[0-9]+)' .github/workflows | grep -v '^[^:]*:[0-9]*:[[:space:]]*#'; then
+            echo "::error::GitHub-hosted runner label found; use sylphx-linux-standard"
+            exit 1
+          fi
       - name: Workflows pass actionlint
         run: |
           set -euo pipefail
@@ -48,7 +56,7 @@ jobs:
   ci-ok:
     if: always()
     needs: [check]
-    runs-on: ubuntu-latest
+    runs-on: sylphx-linux-standard
     timeout-minutes: 2
     steps:
       - run: test "${{ needs.check.result }}" = success
