@@ -19,7 +19,10 @@ env:
 
 jobs:
   build:
-    runs-on: sylphx-linux-standard
+    # GitHub's free standard hosted runner (a public repository, owner#750):
+    # the imager needs a privileged Docker with loop devices, which our Kata
+    # runners do not give (modprobe loop fails, 2026-09-27).
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
