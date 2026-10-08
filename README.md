@@ -19,6 +19,8 @@ the selection rules.
 |----------|--------|-----|
 | `metal-amd64.raw.zst`, on the [release](https://github.com/SylphxAI/talos-images/releases) named after the Talos version | Raw disk image | First install: write it to the server's disk |
 | `ghcr.io/sylphxai/talos-installer:{talos-version}` | OCI image | `talosctl upgrade --image ...` |
+| `metal-amd64.raw.zst`, on release `{talos-version}-stargz` | Raw disk image | Opt-in Kata + stargz first install |
+| `ghcr.io/sylphxai/talos-installer:{talos-version}-stargz` | OCI image | Opt-in Kata + stargz upgrade |
 
 [cluster-api-provider-hetzner-robot](https://github.com/SylphxAI/cluster-api-provider-hetzner-robot)
 downloads the disk image from:
@@ -34,3 +36,22 @@ A push to `main` builds the default Talos version. To build another version:
 ```bash
 gh workflow run build.yml -R SylphxAI/talos-images -f talos_version=v1.14.1
 ```
+
+To publish the opt-in stargz variant:
+
+```bash
+gh workflow run build.yml -R SylphxAI/talos-images -f talos_version=v1.14.1 -f stargz=true
+```
+
+This adds `siderolabs/stargz-snapshotter`, resolved with its digest from the
+requested Talos version's factory catalog, alongside Kata. The release and
+installer tag both gain `-stargz`; the variant does not replace the default
+Kata-only artifacts or become the latest release. Its disk-image URL is:
+
+```
+https://github.com/SylphxAI/talos-images/releases/download/{talos-version}-stargz/metal-amd64.raw.zst
+```
+
+Node configuration and rollout remain the responsibility of downstream
+infrastructure consumers; selecting this image alone does not enable lazy
+pulling for workloads.
