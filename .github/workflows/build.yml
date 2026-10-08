@@ -12,10 +12,16 @@ on:
         description: "Optional explicit Kata extension image (repo:tag@sha256:...). Empty = resolve from the Sidero factory catalog for talos_version."
         default: ""
         required: false
+      stargz:
+        description: "Include the release-compatible stargz snapshotter in a separate -stargz artifact variant"
+        type: boolean
+        default: false
+        required: false
 
 env:
   TALOS_VERSION: ${{ inputs.talos_version || 'v1.14.1' }}
   KATA_EXTENSION_IMAGE: ${{ inputs.kata_extension_image || '' }}
+  STARGZ_ENABLED: ${{ inputs.stargz && 'true' || 'false' }}
 
 jobs:
   build:
@@ -42,32 +48,7 @@ jobs:
 
       - name: Resolve extensions
         id: ext
-        run: |
-          set -euo pipefail
-          FLAGS=""
-          if [ -n "${KATA_EXTENSION_IMAGE}" ]; then
-            KATA_REF="${KATA_EXTENSION_IMAGE}"
-            echo "Using explicit kata_extension_image: ${KATA_REF}"
-          else
-            CATALOG="https://factory.talos.dev/version/${TALOS_VERSION}/extensions/official"
-            KATA_REF=$(curl -fsSL "${CATALOG}" | jq -r '
-              .[] | select(.name=="siderolabs/kata-containers")
-              | "\(.ref)@\(.digest)"' | head -1)
-            if [ -z "${KATA_REF}" ] || [ "${KATA_REF}" = "@" ]; then
-              echo "::error::no siderolabs/kata-containers in the factory catalog for ${TALOS_VERSION} (${CATALOG}); pass kata_extension_image explicitly"
-              exit 1
-            fi
-            echo "Resolved kata extension for ${TALOS_VERSION}: ${KATA_REF}"
-          fi
-          echo "ref=${KATA_REF}" >> "$GITHUB_OUTPUT"
-          # Any extra extensions declared in extensions.yaml (may be empty).
-          while IFS= read -r ext; do
-            [ -z "$ext" ] && continue
-            FLAGS="${FLAGS} --system-extension-image ${ext}"
-          done < <(sed -n 's/^ *- //p' extensions.yaml)
-          FLAGS="${FLAGS} --system-extension-image ${KATA_REF}"
-          echo "flags=${FLAGS}" >> "$GITHUB_OUTPUT"
-          echo "Extensions:${FLAGS}"
+        run: bash scripts/resolve-extensions.sh
 
       # Metal image needs loopback device support — use --privileged
       # and ensure /dev is properly mounted
@@ -96,18 +77,19 @@ jobs:
       - name: Push installer to GHCR
         run: |
           crane push /tmp/talos-installer/installer-amd64.tar \
-            ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}
+            ghcr.io/sylphxai/talos-installer:${{ steps.ext.outputs.artifact_tag }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TALOS_VERSION }}
-          name: Talos ${{ env.TALOS_VERSION }}
+          tag_name: ${{ steps.ext.outputs.artifact_tag }}
+          name: Talos ${{ steps.ext.outputs.artifact_tag }}
           body: |
             Custom Talos image with extensions:
-            - `siderolabs/kata-containers:3.27.0`
+            - Kata: `${{ steps.ext.outputs.ref }}`
+            - stargz (empty when disabled): `${{ steps.ext.outputs.stargz_ref }}`
 
             **Install**: Download `metal-amd64.raw.zst` below
-            **Upgrade**: `ghcr.io/sylphxai/talos-installer:${{ env.TALOS_VERSION }}`
+            **Upgrade**: `ghcr.io/sylphxai/talos-installer:${{ steps.ext.outputs.artifact_tag }}`
           files: /tmp/talos-out/metal-amd64.raw.zst
-          make_latest: true
+          make_latest: ${{ steps.ext.outputs.make_latest }}
