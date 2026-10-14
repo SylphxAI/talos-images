@@ -14,7 +14,7 @@ curl -fsSL --max-time 120 https://codeload.github.com/kata-containers/kata-conta
 printf '%s  %s\n' a99a4dca98061064ff4cb35d27d1ec2345717e9108c822329fcec91dc72bff96 "$scratch/containerd.tar.gz" 722a022d873e6742788eca9f6ed74e8b7c4f70ffe4713144bd2e91fc3db620d0 "$scratch/kata.tar.gz" | sha256sum -c -
 tar -xzf "$scratch/containerd.tar.gz" -C "$scratch"
 tar -xzf "$scratch/kata.tar.gz" -C "$scratch"
-nice -n 19 ionice -c3 "$root/install.sh" "$scratch/containerd-2.3.5" "$scratch/kata-containers-3.32.0"
+nice -n 19 ionice -c3 sh "$root/install.sh" "$scratch/containerd-2.3.5" "$scratch/kata-containers-3.32.0"
 export CGO_ENABLED=0
 nice -n 19 ionice -c3 go -C "$scratch/containerd-2.3.5" test -tags no_aufs,no_btrfs,no_systemd,no_zfs ./internal/cri/server -run '^TestNative' -count=1
 nice -n 19 ionice -c3 make -C "$scratch/kata-containers-3.32.0/src/runtime" pkg/katautils/config-settings.go PREFIX=/usr/local SKIP_GO_VERSION_CHECK=y "NATIVE_REVISION=$source_revision"
@@ -47,7 +47,7 @@ if not any(event.get("Action") == "fail" and event.get("Test") == "TestNativeMem
 print("upstream memory victim-order regression reproduced")
 PY
 rm -- "$kubernetes/pkg/kubelet/eviction/native_memory_test.go"
-"$root/install-kubelet.sh" "$kubernetes"
+bash "$root/install-kubelet.sh" "$kubernetes"
 nice -n 19 ionice -c3 go -C "$kubernetes" test -mod=vendor ./pkg/kubelet/eviction -run '^TestNativeMemoryPressure' -count=1
 nice -n 19 ionice -c3 go -C "$kubernetes" build -mod=vendor -trimpath \
   -ldflags "-X k8s.io/component-base/version.gitVersion=v1.36.4+hostmemory.$source_revision -X k8s.io/component-base/version.gitCommit=$source_revision -X k8s.io/component-base/version.gitMajor=1 -X k8s.io/component-base/version.gitMinor=36 -X k8s.io/component-base/version.gitTreeState=clean" \

@@ -9,7 +9,7 @@ RUN curl -fsSL https://codeload.github.com/containerd/containerd/tar.gz/refs/tag
  && curl -fsSL https://codeload.github.com/kata-containers/kata-containers/tar.gz/refs/tags/3.32.0 -o kata.tar.gz \
  && echo '722a022d873e6742788eca9f6ed74e8b7c4f70ffe4713144bd2e91fc3db620d0  kata.tar.gz' | sha256sum -c - \
  && tar -xzf containerd.tar.gz && tar -xzf kata.tar.gz \
- && host-memory/install.sh /source/containerd-2.3.5 /source/kata-containers-3.32.0
+ && sh host-memory/install.sh /source/containerd-2.3.5 /source/kata-containers-3.32.0
 ARG SOURCE_REVISION
 ENV CGO_ENABLED=0
 RUN test "${#SOURCE_REVISION}" = 40 \
@@ -27,7 +27,7 @@ COPY host-memory/ /source/host-memory/
 RUN curl -fsSL https://codeload.github.com/kubernetes/kubernetes/tar.gz/refs/tags/v1.36.4 -o kubernetes.tar.gz \
  && echo '86a216801ddba7098a50c6f3b3fe5fbc28ba34ea5b1daa66d81c2d5307c301ac  kubernetes.tar.gz' | sha256sum -c - \
  && tar -xzf kubernetes.tar.gz \
- && host-memory/install-kubelet.sh /source/kubernetes-1.36.4
+ && bash host-memory/install-kubelet.sh /source/kubernetes-1.36.4
 ARG SOURCE_REVISION
 ENV CGO_ENABLED=0
 RUN test "${#SOURCE_REVISION}" = 40 && mkdir -p /out \
