@@ -1,0 +1,14 @@
+--- a/pkg/kubelet/eviction/helpers.go
++++ b/pkg/kubelet/eviction/helpers.go
+@@ -817,7 +817,8 @@
+-// It ranks by whether or not the pod's usage exceeds its requests, then by priority, and
+-// finally by memory usage above requests.
++// The native runtime first yields its product best-effort guests. Within each
++// tier preserve upstream above-request, priority and relative-usage ordering.
++// Full guest requests and legacy pod-stat visibility do not confer protection.
+ func rankMemoryPressure(pods []*v1.Pod, stats statsFunc) {
+-	orderedBy(exceedMemoryRequests(stats), priority, memory(stats)).Sort(pods)
++	orderedBy(nativeMemoryTier, exceedMemoryRequests(stats), priority, memory(stats)).Sort(pods)
+ }
+ 
+ // rankPIDPressure orders the input pods by priority in response to PID pressure.

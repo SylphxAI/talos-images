@@ -56,11 +56,25 @@ jobs:
             echo "ok ${ext}"
           done < <(sed -n 's/^ *- //p' extensions.yaml)
 
+  native-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - name: Native protection boundaries and corrected executable smoke
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: bash host-memory/check.sh
+
   # The one required check: fails unless every job above succeeded.
   ci-ok:
     if: always()
-    needs: [check]
+    needs: [check, native-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - run: test "${{ needs.check.result }}" = success
+      - run: test "${{ needs.check.result }}" = success && test "${{ needs.native-runtime.result }}" = success
