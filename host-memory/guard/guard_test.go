@@ -408,7 +408,7 @@ const podRoot = "kubepods"
 func configFor(t *testing.T, k *modelKernel) (Config, *budgetProbe) {
 	t.Helper()
 	probe := &budgetProbe{budget: Budget{Physical: 1200, Allocatable: 1000, Essential: 100, Eviction: 100, Available: 1200}}
-	return Config{CgroupRoot: "/sys/fs/cgroup", PodRoot: "/" + podRoot, StateDir: t.TempDir(), BootID: "test-boot-one", Kernel: k,
+	return Config{CgroupRoot: "/sys/fs/cgroup", PodRoot: "/" + podRoot, StateDir: path.Join(t.TempDir(), "state"), BootID: "test-boot-one", Kernel: k,
 		NodeBudget: probe.read, OperationTimeout: time.Second, ReclaimTimeout: 10 * time.Millisecond}, probe
 }
 

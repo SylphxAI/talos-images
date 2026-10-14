@@ -64,7 +64,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$TALOS_VERSION" = v1.14.1 || { echo 'native runtime supports Talos v1.14.1 only' >&2; exit 1; }
-          test -z "$NATIVE_RUNTIME_RELEASE" && test -z "$KATA_EXTENSION_IMAGE" || { echo 'local native build cannot be mixed with component overrides' >&2; exit 1; }
+          if [ -n "$NATIVE_RUNTIME_RELEASE" ] || [ -n "$KATA_EXTENSION_IMAGE" ]; then
+            echo 'local native build cannot be mixed with component overrides' >&2
+            exit 1
+          fi
           sudo apt-get update
           sudo apt-get install -y skopeo
           # All OS-stack components share the existing public artifact repository;
