@@ -57,6 +57,12 @@ jobs:
           curl -sL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz | tar -xz crane
           sudo mv crane /usr/local/bin/
 
+      # The native stack exports a multi-layer OCI archive with `type=oci`,
+      # which the default docker driver cannot write. The docker-container
+      # builder is the supported driver for that exporter.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and publish native runtime stack
         if: github.event_name == 'push' || inputs.native_host_memory
         env:
