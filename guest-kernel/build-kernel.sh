@@ -50,7 +50,8 @@ build_tool() {
   # ahead of the binary (flex: "no rule to make target ../src/flex").
   local make_target="all"
   # bc's info manual needs makeinfo, which the lease image does not have.
-  [ "$name" = bc ] && make_target="-C bc all"
+  # The library and the two binaries are enough.
+  [ "$name" = bc ] && make_target="-C lib all -C ../bc all -C ../dc all"
   # --disable-dependency-tracking: the lease workspace is virtiofs, and
   # automake's .deps rename fails there with "cannot stat .deps/*.Tpo".
   local extra=""
