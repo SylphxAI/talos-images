@@ -69,7 +69,7 @@ toolchain() {
   # The GNU release, not Debian's dfsg repack: the repack drops the generated
   # docs and its gnulib does not compile against the lease's glibc.
   build_tool bison bison-3.8.2.tar.gz 06c9e13bdf7eb24d4ceb6b59205a4f67c2c7e7213119644430fe82fbd14a0abb
-  command -v bc >/dev/null || { echo "bc is missing" >&2; exit 1; }
+  build_tool bc bc_1.07.1.orig.tar.gz 62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a
   command -v gcc >/dev/null || { echo "gcc is missing" >&2; exit 1; }
 }
 
