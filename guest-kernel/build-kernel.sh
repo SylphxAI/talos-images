@@ -46,16 +46,18 @@ build_tool() {
   echo "$sum  $root/guest-kernel/vendor/$archive" | sha256sum -c -
   mkdir -p "$dest" "$prefix"
   tar -xf "$root/guest-kernel/vendor/$archive" -C "$dest" --strip-components=1
+  # Build, then install. One invocation makes `install` race the man page
+  # ahead of the binary (flex: "no rule to make target ../src/flex").
+  local make_target="all"
   # bison's Debian tarball ships no generated doc and no doc/bison.texi, so a
   # plain `make` stops on examples/extracted.stamp. The binary is all we need.
-  local make_targets="all install"
-  [ "$name" = bison ] && make_targets="src/bison install"
+  [ "$name" = bison ] && make_target="src/bison"
   # --disable-dependency-tracking: the lease workspace is virtiofs, and
   # automake's .deps rename fails there with "cannot stat .deps/*.Tpo".
   # bison: no system libtextstyle, so use the copy it ships.
   local extra=""
   [ "$name" = bison ] && extra="--with-libtextstyle-prefix=no --without-libtextstyle-prefix"
-  ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && make -j "$(nproc)" $make_targets >"$work/$name-build.log" 2>&1 ) || {
+  ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && make -j "$(nproc)" $make_target >"$work/$name-build.log" 2>&1 && make install >>"$work/$name-build.log" 2>&1 ) || {
     echo "$name failed to build; the errors:" >&2
     grep -n -iE 'error|no rule|cannot|missing' "$work/$name-build.log" | head -30 >&2
     exit 1
