@@ -34,12 +34,25 @@ kernel_tree() { echo "$src/kata-linux-$KERNEL_VERSION-$CONFIG_VERSION"; }
 
 need() { command -v "$1" >/dev/null || { echo "missing $1" >&2; exit 1; }; }
 
+# A build lease has no route to the public internet. It fetches through the
+# build cache's upstream mirror, which keeps the host and path of the original
+# URL. Outside a lease the mirror is unset and the URL is used as written.
+mirror_url() {
+  local url=$1 base
+  base=${SYLPHX_UPSTREAM_MIRROR:-}
+  if [ -n "$base" ]; then
+    printf '%s/%s\n' "${base%/}" "${url#https://}"
+  else
+    printf '%s\n' "$url"
+  fi
+}
+
 fetch() {
   local url=$1 dest=$2 sum=$3
   if [ -f "$dest" ] && echo "$sum  $dest" | sha256sum -c - >/dev/null 2>&1; then
     return
   fi
-  curl -fsSL --retry 3 --max-time 600 -o "$dest.partial" "$url"
+  curl -fsSL --retry 3 --max-time 600 -o "$dest.partial" "$(mirror_url "$url")"
   mv "$dest.partial" "$dest"
   echo "$sum  $dest" | sha256sum -c -
 }
