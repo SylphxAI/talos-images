@@ -50,12 +50,17 @@ build_tool() {
   # ahead of the binary (flex: "no rule to make target ../src/flex").
   local make_target="all"
   # bc's info manual needs makeinfo, which the lease image does not have.
-  # The library and the two binaries are enough.
-  [ "$name" = bc ] && make_target="-C lib all -C ../bc all -C ../dc all"
+  # The library and the binary are enough. Separate makes: one chained -C
+  # ends in dc, whose rule then looks for the library in the wrong place.
+  local install_target="install"
+  if [ "$name" = bc ]; then
+    make_target="-C lib all && make -C bc all && make -C dc all"
+    install_target="-C bc install -C ../dc install"
+  fi
   # --disable-dependency-tracking: the lease workspace is virtiofs, and
   # automake's .deps rename fails there with "cannot stat .deps/*.Tpo".
   local extra=""
-  ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && make -j "$(nproc)" $make_target >"$work/$name-build.log" 2>&1 && make install >>"$work/$name-build.log" 2>&1 ) || {
+  ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && eval "make -j $(nproc) $make_target" >"$work/$name-build.log" 2>&1 && eval "make $install_target" >>"$work/$name-build.log" 2>&1 ) || {
     echo "$name failed to build; the errors:" >&2
     grep -n -iE 'error|no rule|cannot|missing|not found' "$work/$name-build.log" | head -30 >&2
     exit 1
