@@ -840,7 +840,11 @@ func (g *Guard) releaseLocked(ctx context.Context, id string) (string, error) {
 // whose private cgroup the kernel owner removed, and finishes unpopulated
 // releases. Held releases are not errors.
 func (g *Guard) settle(ctx context.Context, recovering bool) error {
-	for _, r := range g.ordered() {
+	for _, snapshot := range g.ordered() {
+		r, exists := g.store.records[snapshot.ID]
+		if !exists {
+			continue
+		}
 		var err error
 		switch r.State {
 		case StatePending:

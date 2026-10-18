@@ -156,6 +156,13 @@ func (g *Guard) changeOriginalMode(ctx context.Context, original, identity strin
 // settleMode is replayable after every durable/kernel boundary. A changed
 // original or private identity fails closed, never grants speculative credit.
 func (g *Guard) settleMode(ctx context.Context, r record) error {
+	// Another holder can have retargeted this original while an ordered snapshot
+	// was being replayed. Only the currently durable intent authorizes a write.
+	current, exists := g.store.records[r.ID]
+	if !exists || current.State == StateReleased || current.NextMode == "" {
+		return nil
+	}
+	r = current
 	present, _, _, err := g.observe(ctx, r)
 	if err != nil {
 		return err
@@ -230,7 +237,7 @@ func (g *Guard) settleMode(ctx context.Context, r record) error {
 	if err = g.checkOriginal(ctx, r, r.NextMode); err != nil {
 		return err
 	}
-	identity, err := g.kernel.Identity(ctx, r.Parent)
+	identity, err = g.kernel.Identity(ctx, r.Parent)
 	if err != nil {
 		return err
 	}

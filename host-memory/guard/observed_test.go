@@ -472,3 +472,41 @@ func TestRestartCannotClaimFiniteRoomWhileObservedChargesExceedNewOriginalCap(t 
 		t.Fatal("failed recovery left speculative BE room")
 	}
 }
+
+func TestClearedModeIntentCannotWriteFromAnOlderHolderSnapshot(t *testing.T) {
+	k := newModel()
+	g, _, _ := openFor(t, k)
+	r := observeFor(t, g, k, "p")
+	parent := r.Parent[1:]
+	k.setFile(originalOf("p"), "memory.max", "600")
+	k.writeFault[parent+"/memory.max"] = errors.New("finite transition interrupted")
+	if _, err := g.Protect(context.Background(), "p", 600, 600, "/"+originalOf("p")); err == nil {
+		t.Fatal("fault ignored")
+	}
+	stale := g.store.records["p"]
+	if stale.NextMode != Finite {
+		t.Fatal("no persisted finite intent")
+	}
+	delete(k.writeFault, parent+"/memory.max")
+	k.setFile(originalOf("p"), "memory.max", "max")
+	if _, err := g.Fence(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+	// The original later becomes finite again. Replaying the old snapshot must
+	// not reuse its cleared authority: a fresh durable intent is required.
+	k.setFile(originalOf("p"), "memory.max", "600")
+	if err := g.settleMode(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+	current := g.store.records["p"]
+	if current.Mode != Observed || current.NextMode != "" || k.file(parent, "memory.max") != "max" {
+		t.Fatal("stale intent wrote without durable authority", current)
+	}
+	if _, err := g.Fence(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+	current = g.store.records["p"]
+	if current.Mode != Finite || current.Envelope != 600 {
+		t.Fatal("fresh authoritative discovery did not work", current)
+	}
+}
