@@ -150,12 +150,11 @@ setup() {
   builder=$kata/tools/packaging/kernel/build-kernel.sh
   local tree
   tree=$(kernel_tree)
-  # Kata's setup merges its own fragments into .config.generated and then
-  # stops when the tree already exists, so it never writes .config. Take the
-  # merged fragments from there and add ours on top.
-  if [ ! -f "$tree/.config.generated" ]; then
-    ( cd "$src" && bash "$builder" -v "$KERNEL_VERSION" -k "$tree" setup )
-  fi
+  # Kata's setup returns immediately when the tree already exists, which
+  # skips the fragment merge. Drop the marker it checks so it regenerates
+  # .config.generated. The sources stay; only the generated config is redone.
+  rm -rf "$tree/.config.generated"
+  ( cd "$src" && bash "$builder" -f -v "$KERNEL_VERSION" -k "$tree" setup )
   [ -f "$tree/.config.generated" ] || { echo "kata setup produced no config" >&2; exit 1; }
 
   cd "$tree"
