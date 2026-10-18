@@ -52,6 +52,9 @@ build_tool() {
 }
 
 toolchain() {
+  # m4 first: bison refuses to configure without one that supports -P, and
+  # the kernel build uses it too.
+  build_tool m4 m4_1.4.21.orig.tar.xz f25c6ab51548a73a75558742fb031e0625d6485fe5f9155949d6486a2408ab66
   build_tool flex flex_2.6.4.orig.tar.gz e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995
   build_tool bison bison_3.8.2.orig.tar.xz dff8a3c96dd34121828f62a7fa49e1f7765815b89e59f564e8d2a9e71c177be5
   command -v bc >/dev/null || { echo "bc is missing" >&2; exit 1; }
