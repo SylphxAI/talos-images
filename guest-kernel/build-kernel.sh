@@ -214,6 +214,10 @@ symbols() {
       missing=1
     fi
   done
+  if [ "$missing" != 0 ]; then
+    echo "qdisc symbols actually present:" >&2
+    nm "$vmlinux" | grep -iE 'sch_|flower|htb|netem|prio' | head -40 >&2
+  fi
   [ "$missing" = 0 ]
   echo "vmlinux links prio, htb, netem and flower"
 }
