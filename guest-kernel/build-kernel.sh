@@ -86,7 +86,15 @@ toolchain() {
   # bc's build runs `ed` to generate libmath.h.
   build_tool ed ed_1.22.5.orig.tar.gz 3e411ca3a799cccd90b185a2ad14c90a9d5d2899620e95277c2d4838a6394722
   build_tool bc bc_1.07.1.orig.tar.gz 62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a
+  # objtool includes <gelf.h>. The lease has libelf but not its headers, and
+  # no root, so the headers come from a vendored elfutils built in-tree.
+  if [ ! -f "$work/tools/include/libelf.h" ]; then
+    build_tool elfutils elfutils_0.196.orig.tar.bz2 fd5cc6b77ad6773cac93cb3f415f9318ac3b3455eecf801f6b4a742c4f6c7209
+  fi
   command -v gcc >/dev/null || { echo "gcc is missing" >&2; exit 1; }
+  export PATH="$work/tools/bin:$PATH"
+  export HOSTCFLAGS="-I$work/tools/include ${HOSTCFLAGS:-}"
+  export HOSTLDFLAGS="-L$work/tools/lib ${HOSTLDFLAGS:-}"
 }
 
 # A build lease has no route to the public internet. It fetches through the
@@ -187,7 +195,10 @@ build() {
   [ -f "$tree/.config" ] || { echo "no config; run setup first" >&2; exit 1; }
   verify
   jobs=${JOBS:-$(nproc)}
-  make -C "$tree" -j "$jobs" vmlinux
+  # The vendored tools and libelf headers live in the workspace, not the image.
+  export PATH="$work/tools/bin:$PATH"
+  make -C "$tree" -j "$jobs" \
+    "HOSTCFLAGS=-I$work/tools/include" "HOSTLDFLAGS=-L$work/tools/lib" vmlinux
   [ -f "$tree/vmlinux" ]
 }
 
