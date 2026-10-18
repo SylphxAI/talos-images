@@ -87,8 +87,13 @@ toolchain() {
   build_tool ed ed_1.22.5.orig.tar.gz 3e411ca3a799cccd90b185a2ad14c90a9d5d2899620e95277c2d4838a6394722
   build_tool bc bc_1.07.1.orig.tar.gz 62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a
   # objtool includes <gelf.h>. The lease has libelf but not its headers, and
-  # no root, so the headers come from a vendored elfutils built in-tree.
+  # no root, so the headers come from a vendored elfutils. elfutils needs
+  # zlib's headers, which the image also lacks.
+  if [ ! -f "$work/tools/include/zlib.h" ]; then
+    build_tool zlib zlib-1.3.1.tar.gz 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+  fi
   if [ ! -f "$work/tools/include/libelf.h" ]; then
+    export CPPFLAGS="-I$work/tools/include ${CPPFLAGS:-}" LDFLAGS="-L$work/tools/lib ${LDFLAGS:-}"
     build_tool elfutils elfutils_0.196.orig.tar.bz2 fd5cc6b77ad6773cac93cb3f415f9318ac3b3455eecf801f6b4a742c4f6c7209
   fi
   command -v gcc >/dev/null || { echo "gcc is missing" >&2; exit 1; }
