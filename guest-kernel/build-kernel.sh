@@ -50,7 +50,11 @@ build_tool() {
   # plain `make` stops on examples/extracted.stamp. The binary is all we need.
   local make_targets="all install"
   [ "$name" = bison ] && make_targets="src/bison install"
-  ( cd "$dest" && ./configure --prefix="$prefix" >/dev/null && make -j "$(nproc)" $make_targets >/dev/null )
+  ( cd "$dest" && ./configure --prefix="$prefix" >/dev/null && make -j "$(nproc)" $make_targets >"$work/$name-build.log" 2>&1 ) || {
+    echo "$name failed to build; tail of $work/$name-build.log:" >&2
+    tail -40 "$work/$name-build.log" >&2
+    exit 1
+  }
   export PATH="$prefix/bin:$PATH"
   command -v "$name" >/dev/null || { echo "built $name but it is not on PATH" >&2; exit 1; }
 }
