@@ -280,7 +280,10 @@ func validateRecord(r record, podRoot string) error {
 		return invalid("observed contract is not an envelope")
 	}
 	if r.NextMode != "" {
-		if r.Tier != Protected || (r.State != StateAdmitted && r.State != StateReleasing) || r.NextMode == r.Mode || (r.NextMode != Finite && r.NextMode != Observed) {
+		if r.Mode != Observed && (r.Envelope == 0 || r.Floor == 0 || r.Floor > r.Envelope) {
+			return invalid("finite transition source envelope")
+		}
+		if r.Tier != Protected || (r.State != StateAdmitted && r.State != StateReleasing) || (r.NextMode != Finite && r.NextMode != Observed) {
 			return invalid("mode transition")
 		}
 		if r.NextMode == Observed && (r.Intent != 0 || r.IntentFloor != 0) {

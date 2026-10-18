@@ -107,10 +107,18 @@ The state format is version 4, with an explicit memory mode. Version 3 is accept
 only as finite and rewritten as typed state; unknown modes and malformed records
 fail closed. A finite-to-observed resize records intent before removing the
 runtime-owned private high/max, and only after the original is actually unlimited.
-Restart replays that intent so a stale finite private cap is not left behind.
+Every sandbox holder sharing that original receives its mode intent in one
+atomic state commit before the first private-cap write. Restart replays those
+intents so a replacement holder cannot leave a stale finite private cap or mix
+finite future-credit accounting with observed charges.
 Observed-to-finite requires the original's full enforced cap, charged bytes at or
 below that cap and BE fencing before the finite contract becomes authoritative.
-No transition restores or relaxes kubelet-owned caps.
+Startup, reconciliation and allocation fences discover an identity-matched
+original mode change even when the CRI update was lost. They stage the same
+typed shared-holder intents before restoring private caps. If kubelet reverses
+a pending resize, a new durable intent re-proves its actual cap and charged
+bytes; it never infers the outcome from an old private cap. No transition
+restores or relaxes kubelet-owned caps.
 
 Downgrade is explicit: an old version-3 reader rejects version-4 state (including
 unknown mode fields); do not restart it against a live observed contract. Drain

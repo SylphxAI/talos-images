@@ -256,6 +256,11 @@ func Open(c Config) (_ *Guard, err error) {
 		return nil, err
 	}
 	if err = g.settle(ctx, true); err != nil {
+		if g.hasObserved() {
+			cleanup, stop := g.cleanup(ctx)
+			err = errors.Join(err, g.fence(cleanup, 0, 0))
+			stop()
+		}
 		return nil, err
 	}
 	if s.legacy {
@@ -346,11 +351,11 @@ func (g *Guard) reserve(ctx context.Context, id string, tier Tier, envelope, flo
 		if !allowObserved || tier != Protected {
 			return Contract{}, errors.New("host-memory: finite kubelet pod memory.max required")
 		}
-		if exists && old.Mode == Observed {
-			return g.refence(ctx, old)
+		if err := g.changeOriginalMode(ctx, original, originalID, Observed, 0, 0); err != nil {
+			return Contract{}, err
 		}
 		if exists {
-			return g.changeMode(ctx, old, Observed, 0, 0)
+			return g.refence(ctx, g.store.records[id])
 		}
 		return g.admit(ctx, record{ID: id, Tier: Protected, Mode: Observed, State: StatePending, Original: original, OriginalID: originalID, Parent: privateParent(Protected, id, original), Boot: g.config.BootID})
 	}
@@ -860,14 +865,56 @@ func (g *Guard) settle(ctx context.Context, recovering bool) error {
 			present, _, _, err = g.observe(ctx, r)
 			if err == nil && !present {
 				err = g.markReleased(r)
-			} else if err == nil && recovering {
-				err = g.applyRecord(ctx, r, r.Envelope, r.Floor)
 			}
 		case StateReleasing:
+			if r.NextMode != "" {
+				if err = g.settleMode(ctx, r); err != nil {
+					break
+				}
+				r = g.store.records[r.ID]
+				if r.State == StateReleased {
+					break
+				}
+			}
 			err = g.finishRelease(ctx, r)
 		}
 		if err != nil && !errors.Is(err, ErrHeld) {
 			return err
+		}
+	}
+	// Kubelet may have changed its actual cap before CRI persisted an update or
+	// before the runtime crashed. Discover that authority before reinstating an
+	// old private cap. Lifecycle settlement above removes absent holders first.
+	seen := map[string]bool{}
+	for _, r := range g.ordered() {
+		if r.Tier != Protected || r.State != StateAdmitted || seen[r.Original] {
+			continue
+		}
+		seen[r.Original] = true
+		identity, limit, err := g.inspectOriginal(ctx, r.Original)
+		if err != nil {
+			return err
+		}
+		if identity != r.OriginalID {
+			return errors.New("host-memory: kubelet pod cgroup replaced")
+		}
+		mode := Finite
+		if limit == 0 {
+			mode = Observed
+		}
+		if mode != r.Mode {
+			if err = g.changeOriginalMode(ctx, r.Original, identity, mode, limit, limit); err != nil {
+				return err
+			}
+		}
+	}
+	if recovering {
+		for _, r := range g.ordered() {
+			if r.State == StateAdmitted {
+				if err := g.applyRecord(ctx, r, r.Envelope, r.Floor); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

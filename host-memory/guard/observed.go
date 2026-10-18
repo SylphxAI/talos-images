@@ -89,30 +89,68 @@ func (g *Guard) applyRecord(ctx context.Context, r record, envelope, floor uint6
 // reservation remains counted until its cap is actually removed. Transition
 // to finite counts the new full envelope before its private cap is installed.
 func (g *Guard) changeMode(ctx context.Context, old record, mode MemoryMode, envelope, floor uint64) (Contract, error) {
-	next := old
-	next.NextMode, next.Intent, next.IntentFloor = mode, envelope, floor
-	if mode == Finite {
-		current, err := g.number(ctx, old.Original+"/memory.current")
-		if err != nil {
-			return Contract{}, err
-		}
-		if current > envelope {
-			return Contract{}, errors.New("host-memory: finite transition still charged above enforced envelope")
-		}
-		if _, _, err = g.bounds(ctx, with(g.store.records, next), g.store.records); err != nil {
-			return Contract{}, err
-		}
-	}
-	if err := g.store.put(next); err != nil {
-		return Contract{}, err
-	}
-	if err := g.settleMode(ctx, next); err != nil {
-		return Contract{}, err
-	}
-	if err := g.reconcileProtected(ctx, g.store.records[old.ID]); err != nil {
+	if err := g.changeOriginalMode(ctx, old.Original, old.OriginalID, mode, envelope, floor); err != nil {
 		return Contract{}, err
 	}
 	return g.contract(old.ID), nil
+}
+
+// A kubelet original is shared by replacement sandboxes. Stage every holder's
+// mode intent atomically before changing any private cap, so a crash cannot
+// leave a finite holder masking observed use or an old private cap on restart.
+func (g *Guard) changeOriginalMode(ctx context.Context, original, identity string, mode MemoryMode, envelope, floor uint64) (err error) {
+	defer func() {
+		if err != nil {
+			cleanup, cancel := g.cleanup(ctx)
+			defer cancel()
+			err = errors.Join(err, g.fence(cleanup, 0, 0))
+		}
+	}()
+	candidate := make(map[string]record, len(g.store.records))
+	changed := false
+	for id, r := range g.store.records {
+		if r.State != StateReleased && r.Tier == Protected && r.Original == original {
+			if r.OriginalID != identity {
+				return errors.New("host-memory: shared original identity changed")
+			}
+			if r.Mode != mode || r.NextMode != "" {
+				if r.State != StateAdmitted && r.State != StateReleasing {
+					return errors.New("host-memory: unresolved shared original admission")
+				}
+				r.NextMode, r.Intent, r.IntentFloor = mode, envelope, floor
+				changed = true
+			}
+		}
+		candidate[id] = r
+	}
+	if !changed {
+		return nil
+	}
+	if mode == Finite {
+		current, err := g.number(ctx, original+"/memory.current")
+		if err != nil {
+			return err
+		}
+		if current > envelope {
+			return errors.New("host-memory: finite transition still charged above enforced envelope")
+		}
+		if _, _, err = g.bounds(ctx, candidate, g.store.records); err != nil {
+			return err
+		}
+	}
+	if err := g.store.commit(candidate, g.store.aggregateID); err != nil {
+		return err
+	}
+	for _, r := range g.ordered() {
+		if r.Original == original && r.NextMode == mode {
+			if err := g.settleMode(ctx, r); err != nil {
+				return err
+			}
+		}
+	}
+	// No intermediate holder state grants allocation: the node lock stays held
+	// until all mode intents have settled and the aggregate is freshly fenced.
+	return g.reconcileProtected(ctx, record{Mode: mode})
 }
 
 // settleMode is replayable after every durable/kernel boundary. A changed
@@ -125,8 +163,22 @@ func (g *Guard) settleMode(ctx context.Context, r record) error {
 	if !present {
 		return g.markReleased(r)
 	}
-	if err = g.checkOriginal(ctx, r, r.NextMode); err != nil {
+	identity, limit, err := g.inspectOriginal(ctx, r.Original)
+	if err != nil {
 		return err
+	}
+	if identity != r.OriginalID {
+		return errors.New("host-memory: kubelet pod cgroup replaced")
+	}
+	actualMode := Finite
+	if limit == 0 {
+		actualMode = Observed
+	}
+	// The owner may reverse or supersede a resize while intent is durable.
+	// Retarget all holders through another durable intent, never guess from the
+	// old private cap or clear pending credit before the new proof is enforced.
+	if actualMode != r.NextMode || (actualMode == Finite && !g.pageEqual(limit, r.Intent)) {
+		return g.changeOriginalMode(ctx, r.Original, identity, actualMode, limit, limit)
 	}
 	next := r
 	if r.NextMode == Observed {
@@ -202,6 +254,9 @@ func (g *Guard) ResumeBestEffort(ctx context.Context) error {
 		return err
 	}
 	if err = g.validateTree(ctx); err != nil {
+		return err
+	}
+	if err = g.settle(ctx, false); err != nil {
 		return err
 	}
 	g.observationFailed.Store(false)

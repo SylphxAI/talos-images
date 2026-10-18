@@ -80,6 +80,9 @@ func TestProtectedModeTransitionsRemoveOnlyOwnedCapAndRequireChargedProof(t *tes
 	if _, err = g.Protect(context.Background(), "p", 300, 300, original); err == nil {
 		t.Fatal("returned credit without charged-byte proof")
 	}
+	if k.number(aggregate+"/memory.max") != 0 {
+		t.Fatal("failed charged-byte proof left speculative BE room")
+	}
 	if r, _ = g.Contract("p"); r.Mode != Observed {
 		t.Fatal("failed transition changed contract")
 	}
@@ -280,5 +283,192 @@ func TestObservedPhysicalCounterMustBeConsistent(t *testing.T) {
 	_, err := UsableRoom(Budget{Physical: 100, Allocatable: 100, ObservedResident: 101})
 	if err == nil {
 		t.Fatal("impossible observed physical use accepted")
+	}
+}
+
+func TestSharedOriginalModeChangeCoversEverySandboxHolder(t *testing.T) {
+	k := newModel()
+	g, _, _ := openFor(t, k)
+	original := originalOf("pod")
+	k.kubelet(original, 400)
+	for _, id := range []string{"a", "b"} {
+		if _, err := g.Reserve(context.Background(), id, Protected, 400, 400, "/"+original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	k.setFile(original, "memory.max", "max")
+	if _, err := g.Protect(context.Background(), "c", 0, 0, "/"+original); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		r, _ := g.Contract(id)
+		if r.Mode != Observed || r.Envelope != 0 || k.file(r.Parent[1:], "memory.max") != "max" {
+			t.Fatalf("mixed holder survived:%+v", r)
+		}
+	}
+	k.charge(privateParent(Protected, "a", original), 100, true)
+	k.charge(privateParent(Protected, "b", original), 150, true)
+	k.charge(privateParent(Protected, "c", original), 200, true)
+	if err := g.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if k.number(aggregate+"/memory.max") != 550 {
+		t.Fatal("shared observed charges not counted exactly once")
+	}
+	k.setFile(original, "memory.max", "600")
+	if _, err := g.Protect(context.Background(), "c", 600, 600, "/"+original); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		r, _ := g.Contract(id)
+		if r.Mode != Finite || r.Envelope != 600 || k.number(r.Parent[1:]+"/memory.max") != 600 {
+			t.Fatalf("holder not finite:%+v", r)
+		}
+	}
+	if k.number(aggregate+"/memory.max") != 400 {
+		t.Fatal("shared finite envelope counted more than once")
+	}
+}
+func TestSharedOriginalModeIntentIsDurableBeforeFirstPrivateCapChange(t *testing.T) {
+	k := newModel()
+	c, _ := configFor(t, k)
+	g, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := originalOf("pod")
+	k.kubelet(original, 400)
+	for _, id := range []string{"a", "b"} {
+		if _, err = g.Reserve(context.Background(), id, Protected, 400, 400, "/"+original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	k.setFile(original, "memory.max", "max")
+	second := privateParent(Protected, "b", original)
+	k.writeFault[second+"/memory.max"] = errors.New("second holder interrupted")
+	if _, err = g.Protect(context.Background(), "a", 0, 0, "/"+original); err == nil {
+		t.Fatal("fault ignored")
+	}
+	if g.store.records["a"].Mode != Observed || g.store.records["b"].NextMode != Observed {
+		t.Fatal("shared intent not durable")
+	}
+	if err = g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	delete(k.writeFault, second+"/memory.max")
+	g, err = Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	for _, id := range []string{"a", "b"} {
+		r, _ := g.Contract(id)
+		if r.Mode != Observed || k.file(r.Parent[1:], "memory.max") != "max" {
+			t.Fatal("restart retained mixed mode", r)
+		}
+	}
+}
+
+func TestInterruptedModeEnforcementRevokesBEWithoutTouchingProtectedOriginal(t *testing.T) {
+	k := newModel()
+	g, _, _ := openFor(t, k)
+	reserveAt(t, g, k, "p", Protected, 400, 400, originalOf("p"))
+	vm := reserveAt(t, g, k, "vm", BestEffort, 900, 900, originalOf("vm"))
+	k.charge(vm.Parent[1:], 500, true)
+	k.autoKill = true
+	k.setFile(originalOf("p"), "memory.max", "max")
+	k.writeFault[privateOf(Protected, "p")+"/memory.max"] = errors.New("mode write failed")
+	if _, err := g.Protect(context.Background(), "p", 0, 0, "/"+originalOf("p")); err == nil {
+		t.Fatal("mode fault ignored")
+	}
+	if k.number(aggregate+"/memory.max") != 0 || !k.wasKilled() {
+		t.Fatal("unresolved mode enforcement left BE room")
+	}
+	if k.file(originalOf("p"), "memory.max") != "max" {
+		t.Fatal("protected original changed")
+	}
+}
+
+func TestRestartDiscoversUncappedOriginalBeforeRestoringOldPrivateCap(t *testing.T) {
+	k := newModel()
+	c, _ := configFor(t, k)
+	g, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := originalOf("pod")
+	k.kubelet(original, 400)
+	for _, id := range []string{"a", "b"} {
+		if _, err = g.Reserve(context.Background(), id, Protected, 400, 400, "/"+original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Crash after kubelet applied max, before any CRI update/typed intent.
+	k.setFile(original, "memory.max", "max")
+	g, err = Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	for _, id := range []string{"a", "b"} {
+		r, _ := g.Contract(id)
+		if r.Mode != Observed || k.file(r.Parent[1:], "memory.max") != "max" {
+			t.Fatal("startup retained an obsolete private cap", r)
+		}
+	}
+}
+func TestFenceDiscoversMissedUncappedPodUpdate(t *testing.T) {
+	k := newModel()
+	g, _, _ := openFor(t, k)
+	reserveAt(t, g, k, "p", Protected, 400, 400, originalOf("p"))
+	k.setFile(originalOf("p"), "memory.max", "max")
+	r, err := g.Fence(context.Background(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Mode != Observed || k.file(r.Parent[1:], "memory.max") != "max" {
+		t.Fatal("ordinary allocation kept stale private cap")
+	}
+}
+func TestOwnerCanReverseInterruptedModeChangeThroughDurableProof(t *testing.T) {
+	k := newModel()
+	g, _, _ := openFor(t, k)
+	reserveAt(t, g, k, "p", Protected, 400, 400, originalOf("p"))
+	parent := privateOf(Protected, "p")
+	k.setFile(originalOf("p"), "memory.max", "max")
+	k.writeFault[parent+"/memory.max"] = errors.New("interrupted")
+	if _, err := g.Protect(context.Background(), "p", 0, 0, "/"+originalOf("p")); err == nil {
+		t.Fatal("fault ignored")
+	}
+	delete(k.writeFault, parent+"/memory.max")
+	k.setFile(originalOf("p"), "memory.max", "400")
+	r, err := g.Fence(context.Background(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Mode != Finite || r.Envelope != 400 || k.number(parent+"/memory.high") != 400 || k.number(parent+"/memory.max") != 400 {
+		t.Fatal("reversed owner cap not re-proven", r)
+	}
+}
+func TestRestartCannotClaimFiniteRoomWhileObservedChargesExceedNewOriginalCap(t *testing.T) {
+	k := newModel()
+	c, _ := configFor(t, k)
+	g, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observeFor(t, g, k, "p")
+	k.charge(originalOf("p"), 500, true)
+	g.Close()
+	k.setFile(originalOf("p"), "memory.max", "300")
+	if opened, err := Open(c); err == nil {
+		opened.Close()
+		t.Fatal("restart granted finite credit above charged-byte proof")
+	}
+	if k.number(aggregate+"/memory.max") != 0 {
+		t.Fatal("failed recovery left speculative BE room")
 	}
 }
