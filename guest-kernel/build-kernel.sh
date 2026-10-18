@@ -46,7 +46,11 @@ build_tool() {
   echo "$sum  $root/guest-kernel/vendor/$archive" | sha256sum -c -
   mkdir -p "$dest" "$prefix"
   tar -xf "$root/guest-kernel/vendor/$archive" -C "$dest" --strip-components=1
-  ( cd "$dest" && ./configure --prefix="$prefix" >/dev/null && make -j "$(nproc)" >/dev/null && make install >/dev/null )
+  # bison's Debian tarball ships no generated doc and no doc/bison.texi, so a
+  # plain `make` stops on examples/extracted.stamp. The binary is all we need.
+  local make_targets="all install"
+  [ "$name" = bison ] && make_targets="src/bison install"
+  ( cd "$dest" && ./configure --prefix="$prefix" >/dev/null && make -j "$(nproc)" $make_targets >/dev/null )
   export PATH="$prefix/bin:$PATH"
   command -v "$name" >/dev/null || { echo "built $name but it is not on PATH" >&2; exit 1; }
 }
