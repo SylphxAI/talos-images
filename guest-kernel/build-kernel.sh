@@ -208,18 +208,16 @@ symbols() {
   tree=$(kernel_tree)
   vmlinux=$tree/vmlinux
   [ -f "$vmlinux" ] || { echo "no vmlinux; run build first" >&2; exit 1; }
-  for name in prio_qdisc_ops htb_qdisc_ops netem_qdisc_ops cls_flower_ops; do
-    if ! nm "$vmlinux" | grep -q " ${name}$"; then
-      echo "vmlinux has no $name" >&2
+  # Built-in qdiscs are not exported. Each one leaves an initcall named
+  # after its module init, which is what registers it with the scheduler.
+  for name in sch_prio sch_htb sch_netem cls_flower; do
+    if ! nm "$vmlinux" | grep -q "__initcall__kmod_${name}__"; then
+      echo "vmlinux does not register $name" >&2
       missing=1
     fi
   done
-  if [ "$missing" != 0 ]; then
-    echo "qdisc symbols actually present:" >&2
-    nm "$vmlinux" | grep -iE 'sch_|flower|htb|netem|prio' | head -40 >&2
-  fi
   [ "$missing" = 0 ]
-  echo "vmlinux links prio, htb, netem and flower"
+  echo "vmlinux registers prio, htb, netem and flower"
 }
 
 build() {
@@ -251,5 +249,5 @@ case ${1:-} in
   build) build ;;
   symbols) symbols ;;
   package) package ;;
-  *) echo "usage: $0 setup|verify|build|package" >&2; exit 2 ;;
+  *) echo "usage: $0 setup|verify|build|symbols|package" >&2; exit 2 ;;
 esac
