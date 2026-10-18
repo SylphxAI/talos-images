@@ -72,13 +72,16 @@ build_tool() {
     }
   fi
   export PATH="$prefix/bin:$PATH"
-  if ! command -v "$name" >/dev/null; then
-    # bc installs dc and the library but not always bc itself.
-    local built
-    built=$(find "$dest" -type f -name "$name" -executable | head -1)
-    if [ -n "$built" ]; then install -m 0755 "$built" "$prefix/bin/$name"; fi
-  fi
-  command -v "$name" >/dev/null || { echo "built $name but it is not on PATH" >&2; exit 1; }
+  case "$name" in
+    zlib|elfutils) [ -f "$prefix/include/zlib.h" ] || [ -f "$prefix/include/libelf.h" ] || { echo "$name installed no headers" >&2; exit 1; } ;;
+    *)
+      if ! command -v "$name" >/dev/null; then
+        local built
+        built=$(find "$dest" -type f -name "$name" -executable | head -1)
+        if [ -n "$built" ]; then install -m 0755 "$built" "$prefix/bin/$name"; fi
+      fi
+      command -v "$name" >/dev/null || { echo "built $name but it is not on PATH" >&2; exit 1; } ;;
+  esac
 }
 
 toolchain() {
