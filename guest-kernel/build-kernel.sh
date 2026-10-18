@@ -59,12 +59,18 @@ build_tool() {
   fi
   # --disable-dependency-tracking: the lease workspace is virtiofs, and
   # automake's .deps rename fails there with "cannot stat .deps/*.Tpo".
-  local extra=""
-  ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && eval "make -j $(nproc) $make_target" >"$work/$name-build.log" 2>&1 && eval "make $install_target" >>"$work/$name-build.log" 2>&1 ) || {
-    echo "$name failed to build; the errors:" >&2
-    grep -n -iE 'error|no rule|cannot|missing|not found' "$work/$name-build.log" | head -30 >&2
-    exit 1
-  }
+  local log=$work/$name-build.log
+  if [ "$name" = zlib ]; then
+    # zlib's configure is its own, not autoconf, and takes no automake flags.
+    ( cd "$dest" && ./configure --prefix="$prefix" >"$log" 2>&1 && make -j "$(nproc)" >>"$log" 2>&1 && make install >>"$log" 2>&1 ) || {
+      echo "zlib failed to build:" >&2; tail -20 "$log" >&2; exit 1; }
+  else
+    ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking >/dev/null && eval "make -j $(nproc) $make_target" >"$log" 2>&1 && eval "make $install_target" >>"$log" 2>&1 ) || {
+      echo "$name failed to build; the errors:" >&2
+      grep -n -iE 'error|no rule|cannot|missing|not found' "$log" | head -30 >&2
+      exit 1
+    }
+  fi
   export PATH="$prefix/bin:$PATH"
   if ! command -v "$name" >/dev/null; then
     # bc installs dc and the library but not always bc itself.
