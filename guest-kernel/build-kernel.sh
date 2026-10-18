@@ -203,11 +203,27 @@ verify() {
   echo "guest kernel config has prio, htb, netem and flower built in"
 }
 
+symbols() {
+  local tree vmlinux missing=0 name
+  tree=$(kernel_tree)
+  vmlinux=$tree/vmlinux
+  [ -f "$vmlinux" ] || { echo "no vmlinux; run build first" >&2; exit 1; }
+  for name in prio_qdisc_ops htb_qdisc_ops netem_qdisc_ops cls_flower_ops; do
+    if ! nm "$vmlinux" | grep -q " ${name}$"; then
+      echo "vmlinux has no $name" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" = 0 ]
+  echo "vmlinux links prio, htb, netem and flower"
+}
+
 build() {
   local tree jobs
   tree=$(kernel_tree)
   [ -f "$tree/.config" ] || { echo "no config; run setup first" >&2; exit 1; }
   verify
+  toolchain
   jobs=${JOBS:-$(nproc)}
   # The vendored tools and libelf headers live in the workspace, not the image.
   export PATH="$work/tools/bin:$PATH"
@@ -229,6 +245,7 @@ case ${1:-} in
   setup) setup ;;
   verify) verify ;;
   build) build ;;
+  symbols) symbols ;;
   package) package ;;
   *) echo "usage: $0 setup|verify|build|package" >&2; exit 2 ;;
 esac
