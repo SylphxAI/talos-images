@@ -112,8 +112,28 @@ func (d *nativeContracts) Contracts() []guard.Contract {
 	return out
 }
 
-func (d *nativeContracts) Reconcile(context.Context) error { return nil }
-func (d *nativeContracts) Close() error                    { return nil }
+func (d *nativeContracts) Reconcile(context.Context) error         { return nil }
+func (d *nativeContracts) SuspendBestEffort(context.Context) error { return nil }
+func (d *nativeContracts) ResumeBestEffort(context.Context) error  { return nil }
+func (d *nativeContracts) Protect(ctx context.Context, id string, envelope, floor uint64, original string) (guard.Contract, error) {
+	c, err := d.Reserve(ctx, id, guard.Protected, envelope, floor, original)
+	if err == nil {
+		c.Mode = guard.Finite
+		if envelope == 0 {
+			c.Mode = guard.Observed
+		}
+		d.mu.Lock()
+		d.contracts[id] = c
+		d.mu.Unlock()
+	}
+	return c, err
+}
+
+type healthyNativeObserver struct{}
+
+func (healthyNativeObserver) Close() error { return nil }
+func (healthyNativeObserver) Err() error   { return nil }
+func (d *nativeContracts) Close() error    { return nil }
 
 type nativeHarness struct {
 	memory    *nativeMemory
@@ -131,7 +151,9 @@ func newNativeHarness(t *testing.T) *nativeHarness {
 			return nil, h.openErr
 		}
 		return h.driver, nil
-	}, func() []nativeSandbox { return h.sandboxes }, func(id string) bool { return h.live[id] }, nil)
+	}, func() []nativeSandbox { return h.sandboxes }, func(id string) bool { return h.live[id] }, func(func(context.Context) error, func(error)) (nativeObserver, error) {
+		return healthyNativeObserver{}, nil
+	})
 	return h
 }
 
@@ -528,7 +550,7 @@ func TestNativeBudgetTalosOmittedFieldsUsePinnedKubeletDefaults(t *testing.T) {
 	// Kubelet node available = 8192 - (anon 2000 + file 3000 - inactive 1000)
 	// = 4192Mi, below MemAvailable 5000Mi: the smaller signal is supplied.
 	f.root(t, 2000*mib, 3000*mib, 1000*mib)
-	budget, err := f.reader.read([]string{"/kubepods/burstable/poda"})
+	budget, err := f.reader.read([]guard.ProtectedOriginal{{Path: "/kubepods/burstable/poda", Mode: guard.Finite}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +564,7 @@ func TestNativeBudgetTalosOmittedFieldsUsePinnedKubeletDefaults(t *testing.T) {
 		t.Fatalf("budget %+v, want %+v", budget, want)
 	}
 	// An original kubelet already removed is proof it emptied: zero, not error.
-	if budget, err = f.reader.read([]string{"/kubepods/burstable/podgone"}); err != nil || budget.ProtectedResident != 0 {
+	if budget, err = f.reader.read([]guard.ProtectedOriginal{{Path: "/kubepods/burstable/podgone", Mode: guard.Finite}}); err != nil || budget.ProtectedResident != 0 {
 		t.Fatalf("removed original: %+v %v", budget, err)
 	}
 	// Kubelet's signal above MemAvailable: MemAvailable is the bound.
@@ -597,10 +619,10 @@ func TestNativeBudgetRefusesUnsupportedOrChangedHierarchy(t *testing.T) {
 	f := newNativeBudgetFixture(t, talosKubelet)
 	nativeWrite(t, f.reader.meminfoPath, "MemTotal: 1048576 kB\nMemFree: 524288 kB\nMemAvailable: 524288 kB\n")
 	f.cgroup(t, "sylphx-besteffort", 0, 0, 0, 0, 0)
-	if _, err := f.reader.read([]string{"/system/pod"}); err == nil {
+	if _, err := f.reader.read([]guard.ProtectedOriginal{{Path: "/system/pod", Mode: guard.Finite}}); err == nil {
 		t.Fatal("original outside kubelet pod root accepted")
 	}
-	if _, err := f.reader.read([]string{"/kubepods/burstable", "/kubepods/burstable/poda"}); err == nil {
+	if _, err := f.reader.read([]guard.ProtectedOriginal{{Path: "/kubepods/burstable", Mode: guard.Finite}, {Path: "/kubepods/burstable/poda", Mode: guard.Finite}}); err == nil {
 		t.Fatal("overlapping originals accepted")
 	}
 	for _, kubelet := range []string{talosKubelet + "cgroupDriver: systemd\n", talosKubelet + "cgroupsPerQOS: false\n", "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\ncgroupRoot: /nested\n"} {
@@ -693,10 +715,11 @@ func TestNativePressureWatcherStopsWhenMonitorIsDestroyed(t *testing.T) {
 	if err := unix.Pipe2(pipe[:], unix.O_CLOEXEC); err != nil {
 		t.Fatal(err)
 	}
+	failed := make(chan error, 1)
 	w, err := watchNativePressure(pipe[0], func(context.Context) error {
 		t.Error("hangup treated as pressure")
 		return nil
-	}, time.Second)
+	}, time.Second, func(err error) { failed <- err })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +729,77 @@ func TestNativePressureWatcherStopsWhenMonitorIsDestroyed(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("destroyed monitor left the watcher running")
 	}
+	if w.Err() == nil {
+		t.Fatal("destroyed watcher reported healthy")
+	}
+	select {
+	case err := <-failed:
+		if err == nil {
+			t.Fatal("empty failure")
+		}
+	default:
+		t.Fatal("observer loss did not revoke BE through failure callback")
+	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeObservedProtectedNeedsNoInventedEnvelopeOrObserver(t *testing.T) {
+	h := newNativeHarness(t)
+	h.memory.watch = nil
+	h.memory.adopt(context.Background())
+	pod := nativePod("/kubepods/burstable/pod-protected", 0, 0)
+	if err := h.memory.create(context.Background(), "protected", "runc", nativeRuncRuntime, nativePodSandboxMode, pod); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := h.driver.Contract("protected")
+	if c.Mode != guard.Observed || c.Envelope != 0 || c.Floor != 0 {
+		t.Fatalf("invented observed cap:%+v", c)
+	}
+	be := nativePod("/kubepods/burstable/pod-be", 1024, 256)
+	if err := h.memory.create(context.Background(), "be", nativeCanaryHandler, nativeKataRuntime, nativePodSandboxMode, be); err == nil {
+		t.Fatal("BE admitted with no observer")
+	}
+	if _, ok := h.driver.Contract("be"); ok {
+		t.Fatal("BE reserved before observer check")
+	}
+}
+
+type failedNativeObserver struct{ err error }
+
+func (w failedNativeObserver) Close() error { return nil }
+func (w failedNativeObserver) Err() error   { return w.err }
+func TestNativeInstalledButFailedObserverCannotGrantBE(t *testing.T) {
+	h := newNativeHarness(t)
+	h.memory.watch = func(func(context.Context) error, func(error)) (nativeObserver, error) {
+		return failedNativeObserver{errors.New("kernel monitor destroyed")}, nil
+	}
+	h.memory.adopt(context.Background())
+	if err := h.memory.create(context.Background(), "be", nativeCanaryHandler, nativeKataRuntime, nativePodSandboxMode, nativePod("/kubepods/pod-be", 1024, 0)); err == nil {
+		t.Fatal("installed but failed watcher accepted")
+	}
+}
+
+func TestNativeBudgetObservedUsageDoesNotOffsetFiniteFutureCredit(t *testing.T) {
+	f := newNativeBudgetFixture(t, talosKubelet)
+	nativeWrite(t, f.reader.meminfoPath, "MemTotal: 8388608 kB\nMemFree: 2097152 kB\nMemAvailable: 5120000 kB\n")
+	f.cgroup(t, "kubepods", 2500*mib, 0, 0, 0, 0)
+	f.cgroup(t, "kubepods/finite", 500*mib, 0, 0, 0, 0)
+	f.cgroup(t, "kubepods/observed", 2000*mib, 0, 0, 0, 0)
+	f.cgroup(t, "sylphx-besteffort", 1000*mib, 0, 0, 0, 0)
+	f.root(t, 2000*mib, 3000*mib, 1000*mib)
+	b, err := f.reader.read([]guard.ProtectedOriginal{{Path: "/kubepods/finite", Mode: guard.Finite}, {Path: "/kubepods/observed", Mode: guard.Observed}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.ProtectedResident != 500*mib || b.ObservedResident != 2000*mib || b.Essential != (6144-3500)*mib {
+		t.Fatalf("mixed-mode accounting:%+v", b)
+	}
+}
+
+func TestNativeBudgetRejectsUnknownFirstMode(t *testing.T) {
+	if err := nativeOriginals([]guard.ProtectedOriginal{{Path: "/kubepods/poda", Mode: "unknown"}}); err == nil {
+		t.Fatal("first original bypassed mode validation")
 	}
 }

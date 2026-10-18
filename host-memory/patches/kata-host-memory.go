@@ -64,17 +64,25 @@ func nativeShimLaunch(bundle, id string) (*os.File, error) {
 		dir = os.NewFile(uintptr(next), part)
 	}
 	defer dir.Close()
-	// Guard installs finite limits on both tiers' private parents. Swap and
+	// Protected parents may retain unlimited original caps; BE must remain finite. Swap and
 	// group-OOM containment are best-effort-leaf requirements only.
+	limits := make(map[string]string, 2)
 	for _, name := range []string{"memory.high", "memory.max"} {
 		value, err := nativeRead(dir, name)
 		if err != nil {
 			return nil, err
 		}
-		if finite, err := strconv.ParseUint(value, 10, 64); err != nil || finite == 0 {
-			return nil, fmt.Errorf("native private parent requires positive finite %s, got %q", name, value)
+		limits[name] = value
+	}
+	observed := !bestEffort && limits["memory.high"] == "max" && limits["memory.max"] == "max"
+	if !observed {
+		for name, value := range limits {
+			if finite, err := strconv.ParseUint(value, 10, 64); err != nil || finite == 0 {
+				return nil, fmt.Errorf("native private parent requires matching finite or observed limits, got %s=%q", name, value)
+			}
 		}
 	}
+
 	if bestEffort {
 		for name, want := range map[string]string{"memory.swap.max": "0", "memory.oom.group": "1"} {
 			if value, err := nativeRead(dir, name); err != nil || value != want {

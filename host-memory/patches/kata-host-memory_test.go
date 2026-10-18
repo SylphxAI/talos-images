@@ -135,3 +135,39 @@ func TestNativeShimRefusesUnboundedOrForeignPlacement(t *testing.T) {
 		t.Fatal("refused launches created a shim cgroup")
 	}
 }
+
+func TestNativeShimObservedProtectedRetainsUncappedAncestryAndScore(t *testing.T) {
+	f := newNativeShimFixture(t)
+	parent := "/kubepods/burstable/poda/native-" + nativeShimDigest("sb")
+	f.sandbox(t, parent+"/sb")
+	f.parent(t, parent, map[string]string{"memory.high": "max", "memory.max": "max"})
+	leaf, err := nativeShimLaunch(f.bundle, "sb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	if f.oomScore(t) != "0" {
+		t.Fatal("observed protected inherited BE OOM adjustment")
+	}
+	if _, err = os.Stat(filepath.Join(f.root, parent, resourcecontrol.NativeShimLeaf)); err != nil {
+		t.Fatal("shim escaped observed private parent", err)
+	}
+	for _, name := range []string{"memory.high", "memory.max"} {
+		data, err := os.ReadFile(filepath.Join(f.root, parent, name))
+		if err != nil || string(data) != "max\n" {
+			t.Fatal("protected cap was changed", name, err)
+		}
+	}
+}
+func TestNativeShimBestEffortCannotUseObservedMode(t *testing.T) {
+	f := newNativeShimFixture(t)
+	parent := "/sylphx-besteffort/pod-" + nativeShimDigest("sb")
+	f.sandbox(t, parent+"/sb")
+	f.parent(t, parent, map[string]string{"memory.high": "max", "memory.max": "max", "memory.swap.max": "0", "memory.oom.group": "1"})
+	if _, err := nativeShimLaunch(f.bundle, "sb"); err == nil {
+		t.Fatal("BE escaped finite host envelope")
+	}
+	if f.oomScore(t) != "0" {
+		t.Fatal("refused launch changed OOM score")
+	}
+}

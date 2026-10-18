@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const stateVersion = 3
+const stateVersion = 4
 const stateName = "reservations.json"
 
 // record is the single durable contract. Paths are relative to the cgroup
@@ -22,18 +22,20 @@ const stateName = "reservations.json"
 // IntentFloor are an in-flight first admission (Pending) or protected growth
 // (Admitted) that already counts as credit but was never returned as granted.
 type record struct {
-	ID          string `json:"id"`
-	Tier        Tier   `json:"tier"`
-	State       State  `json:"state"`
-	Original    string `json:"original"`
-	OriginalID  string `json:"original_identity,omitempty"`
-	Parent      string `json:"parent"`
-	ParentID    string `json:"parent_identity,omitempty"`
-	Envelope    uint64 `json:"envelope"`
-	Floor       uint64 `json:"floor"`
-	Intent      uint64 `json:"intent,omitempty"`
-	IntentFloor uint64 `json:"intent_floor,omitempty"`
-	Boot        string `json:"boot_id"`
+	ID          string     `json:"id"`
+	Tier        Tier       `json:"tier"`
+	Mode        MemoryMode `json:"memory_mode"`
+	NextMode    MemoryMode `json:"next_memory_mode,omitempty"`
+	State       State      `json:"state"`
+	Original    string     `json:"original"`
+	OriginalID  string     `json:"original_identity,omitempty"`
+	Parent      string     `json:"parent"`
+	ParentID    string     `json:"parent_identity,omitempty"`
+	Envelope    uint64     `json:"envelope"`
+	Floor       uint64     `json:"floor"`
+	Intent      uint64     `json:"intent,omitempty"`
+	IntentFloor uint64     `json:"intent_floor,omitempty"`
+	Boot        string     `json:"boot_id"`
 }
 
 func (r record) credit() uint64 { return max(r.Envelope, r.Intent) }
@@ -54,6 +56,7 @@ type stateStore struct {
 	bootID      string
 	existing    bool
 	priorBoot   bool
+	legacy      bool
 	aggregateID string
 	records     map[string]record
 }
@@ -115,13 +118,21 @@ func openState(dir, root, podRoot, bootID string) (*stateStore, error) {
 	if err = decoder.Decode(&extra); err != io.EOF {
 		return nil, errors.New("host-memory: trailing reservation state")
 	}
-	if d.Version != stateVersion || d.Root != root || d.PodRoot != podRoot {
+	if (d.Version != stateVersion && d.Version != 3) || d.Root != root || d.PodRoot != podRoot {
 		return nil, errors.New("host-memory: state schema/root ownership mismatch")
 	}
 	if d.BootID == "" {
 		return nil, errors.New("host-memory: durable state lacks kernel boot identity")
 	}
 	for _, r := range d.Records {
+		if d.Version == 3 {
+			if r.Mode != "" || r.NextMode != "" {
+				return nil, errors.New("host-memory: typed contract in legacy state")
+			}
+			r.Mode = Finite
+		} else if r.Mode == "" {
+			return nil, errors.New("host-memory: missing durable memory mode")
+		}
 		if err = validateRecord(r, podRoot); err != nil {
 			return nil, err
 		}
@@ -136,6 +147,7 @@ func openState(dir, root, podRoot, bootID string) (*stateStore, error) {
 	if err = validateOverlap(s.records); err != nil {
 		return nil, err
 	}
+	s.legacy = d.Version == 3
 	s.aggregateID = d.AggregateID
 	if len(s.records) > 0 && s.aggregateID == "" {
 		return nil, errors.New("host-memory: reservation state lacks aggregate ownership")
@@ -158,7 +170,11 @@ func openNoFollow(p string, flags int) (*os.File, error) {
 
 // commit atomically replaces the durable state, then the in-memory view.
 func (s *stateStore) commit(records map[string]record, aggregateID string) error {
-	for _, r := range records {
+	for id, r := range records {
+		if r.Mode == "" {
+			r.Mode = Finite
+			records[id] = r
+		}
 		if err := validateRecord(r, s.podRoot); err != nil {
 			return err
 		}
@@ -256,6 +272,46 @@ func validateRecord(r record, podRoot string) error {
 	}
 	if r.Tier == Protected && r.OriginalID == "" {
 		return invalid("protected original identity")
+	}
+	if r.Mode != "" && r.Mode != Finite && r.Mode != Observed {
+		return invalid("memory mode")
+	}
+	if r.Mode == Observed && (r.Tier != Protected || r.Envelope != 0 || r.Floor != 0) {
+		return invalid("observed contract is not an envelope")
+	}
+	if r.NextMode != "" {
+		if r.Tier != Protected || (r.State != StateAdmitted && r.State != StateReleasing) || r.NextMode == r.Mode || (r.NextMode != Finite && r.NextMode != Observed) {
+			return invalid("mode transition")
+		}
+		if r.NextMode == Observed && (r.Intent != 0 || r.IntentFloor != 0) {
+			return invalid("observed transition credit")
+		}
+		if r.NextMode == Finite && (r.Intent == 0 || r.IntentFloor == 0 || r.IntentFloor > r.Intent) {
+			return invalid("finite transition envelope")
+		}
+		if r.ParentID == "" {
+			return invalid("mode transition identity")
+		}
+		return nil
+	}
+	if r.Mode == Observed {
+		if r.Intent != 0 || r.IntentFloor != 0 {
+			return invalid("observed intent")
+		}
+		switch r.State {
+		case StatePending:
+			if r.ParentID != "" {
+				return invalid("pending observed identity")
+			}
+		case StateAdmitted, StateReleasing:
+			if r.ParentID == "" {
+				return invalid("observed identity")
+			}
+		case StateReleased:
+		default:
+			return invalid("observed lifecycle")
+		}
+		return nil
 	}
 	admitted := r.Envelope > 0 && r.Floor > 0 && r.Floor <= r.Envelope && r.ParentID != ""
 	idle := r.Intent == 0 && r.IntentFloor == 0

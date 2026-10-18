@@ -38,6 +38,9 @@ const (
 // implements it; tests substitute the contract state machine only.
 type memoryDriver interface {
 	Reserve(ctx context.Context, id string, tier guard.Tier, envelope, floor uint64, originalParent string) (guard.Contract, error)
+	Protect(ctx context.Context, id string, envelope, floor uint64, originalParent string) (guard.Contract, error)
+	SuspendBestEffort(context.Context) error
+	ResumeBestEffort(context.Context) error
 	Fence(ctx context.Context, id string) (guard.Contract, error)
 	Release(ctx context.Context, id string) error
 	Forget(ctx context.Context, id string) error
@@ -56,14 +59,19 @@ type nativeSandbox struct {
 	Live    bool
 }
 
+type nativeObserver interface {
+	Close() error
+	Err() error
+}
+
 type nativeMemory struct {
 	mu        sync.Mutex
 	open      func() (memoryDriver, error)
 	inventory func() []nativeSandbox
 	live      func(id string) bool
-	watch     func(func(context.Context) error) (interface{ Close() error }, error)
+	watch     func(func(context.Context) error, func(error)) (nativeObserver, error)
 	driver    memoryDriver
-	watcher   interface{ Close() error }
+	watcher   nativeObserver
 	recovered bool
 	closed    bool
 	// unowned live sandboxes predate native ownership (or disagree with it).
@@ -75,7 +83,7 @@ type nativeMemory struct {
 }
 
 func newNativeMemory(open func() (memoryDriver, error), inventory func() []nativeSandbox, live func(string) bool,
-	watch func(func(context.Context) error) (interface{ Close() error }, error)) *nativeMemory {
+	watch func(func(context.Context) error, func(error)) (nativeObserver, error)) *nativeMemory {
 	return &nativeMemory{open: open, inventory: inventory, live: live, watch: watch, unowned: map[string]string{}, orphans: map[string]bool{}}
 }
 
@@ -179,13 +187,39 @@ func (m *nativeMemory) ensureLocked(ctx context.Context) error {
 	}
 	m.driver = driver
 	m.adoptLocked(ctx)
+	// Guard starts with no installed observer after a runtime restart. Revoke
+	// BE first; only an actual healthy kernel watcher may reopen admission.
+	if err := driver.SuspendBestEffort(ctx); err != nil {
+		log.G(ctx).WithError(err).Warn("native BE suspension awaiting charged-byte release")
+	}
 	if m.watch != nil {
-		watcher, err := m.watch(driver.Reconcile)
+		failure := func(cause error) {
+			bounded, cancel := context.WithTimeout(context.Background(), nativeReconcileLimit)
+			defer cancel()
+			if err := driver.SuspendBestEffort(bounded); err != nil {
+				log.G(bounded).WithError(errors.Join(cause, err)).Error("native best-effort suspension incomplete; allocation remains closed")
+			}
+		}
+		watcher, err := m.watch(driver.Reconcile, failure)
 		if err != nil {
-			// PSI only supplements the aggregate hard bound and fences.
+			// Missing mandatory observation closes BE allocation; protected caps remain unchanged.
 			log.G(ctx).WithError(err).Warn("native host memory pressure watcher unavailable")
+			failure(err)
 		} else {
 			m.watcher = watcher
+			if watcher == nil {
+				failure(errors.New("kernel observer factory returned no watcher"))
+			} else if err := watcher.Err(); err != nil {
+				failure(err)
+			} else if err := driver.ResumeBestEffort(ctx); err != nil {
+				log.G(ctx).WithError(err).Warn("native BE admission remains closed after observer install")
+			} else if err := watcher.Err(); err != nil {
+				failure(err)
+			}
+		}
+	} else {
+		if err := driver.SuspendBestEffort(ctx); err != nil {
+			log.G(ctx).WithError(err).Error("native memory observer absent; BE suspension incomplete")
 		}
 	}
 	return nil
@@ -305,7 +339,8 @@ func (m *nativeMemory) create(ctx context.Context, id, handler, runtimeType, san
 	if err != nil {
 		return err
 	}
-	envelope, floor, err := nativeEnvelope(linux.GetResources(), linux.GetOverhead())
+	tier := nativeTier(handler)
+	envelope, floor, err := nativeCandidate(tier, linux.GetResources(), linux.GetOverhead())
 	if err != nil {
 		return err
 	}
@@ -313,14 +348,19 @@ func (m *nativeMemory) create(ctx context.Context, id, handler, runtimeType, san
 	if err != nil {
 		return err
 	}
-	tier := nativeTier(handler)
-	contract, err := driver.Reserve(ctx, id, tier, envelope, floor, original)
+	if tier == guard.BestEffort {
+		if err := m.requireObserver(ctx, driver); err != nil {
+			return err
+		}
+	}
+	contract, err := nativeReserve(ctx, driver, id, tier, envelope, floor, original)
 	if err != nil {
 		return err
 	}
 	if contract.State != guard.StateAdmitted || contract.Tier != tier || contract.Original != original || contract.Parent != nativePrivateParent(id, tier, original) {
 		return fmt.Errorf("native guard returned unexpected contract for sandbox %s", id)
 	}
+	log.G(ctx).WithFields(log.Fields{"sandbox": id, "tier": contract.Tier, "memory_mode": contract.Mode, "envelope_bytes": contract.Envelope}).Info("native host memory contract admitted")
 	linux.CgroupParent = contract.Parent
 	return nil
 }
@@ -383,6 +423,11 @@ func (m *nativeMemory) fence(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if c, ok := driver.Contract(id); ok && c.Tier == guard.BestEffort {
+		if err := m.requireObserver(ctx, driver); err != nil {
+			return err
+		}
+	}
 	contract, err := driver.Fence(ctx, id)
 	if err != nil {
 		return err
@@ -435,10 +480,6 @@ func (m *nativeMemory) podUpdate(ctx context.Context, id string, oldResources, o
 	if oldResources.GetMemoryLimitInBytes() == resources.GetMemoryLimitInBytes() && oldOverhead.GetMemoryLimitInBytes() == overhead.GetMemoryLimitInBytes() {
 		return nil
 	}
-	envelope, floor, err := nativeEnvelope(resources, overhead)
-	if err != nil {
-		return err
-	}
 	driver, err := m.allocation(ctx)
 	if err != nil {
 		return err
@@ -447,7 +488,16 @@ func (m *nativeMemory) podUpdate(ctx context.Context, id string, oldResources, o
 	if !ok || contract.State != guard.StateAdmitted {
 		return fmt.Errorf("sandbox %s lacks an admitted native memory contract; memory resize refused", id)
 	}
-	_, err = driver.Reserve(ctx, id, contract.Tier, envelope, floor, contract.Original)
+	envelope, floor, err := nativeCandidate(contract.Tier, resources, overhead)
+	if err != nil {
+		return err
+	}
+	if contract.Tier == guard.BestEffort {
+		if err = m.requireObserver(ctx, driver); err != nil {
+			return err
+		}
+	}
+	_, err = nativeReserve(ctx, driver, id, contract.Tier, envelope, floor, contract.Original)
 	return err
 }
 
@@ -495,4 +545,38 @@ func (m *nativeMemory) close() error {
 		m.driver = nil
 	}
 	return err
+}
+
+// nativeCandidate is only a finite candidate, not a classification of the pod.
+// Kubelet's real memory.max determines the mode, including when CRI sums a
+// finite sibling alongside an unlimited one. Requests are never used here.
+func nativeCandidate(tier guard.Tier, resources, overhead *runtime.LinuxContainerResources) (uint64, uint64, error) {
+	if tier == guard.Protected && resources.GetMemoryLimitInBytes() == 0 {
+		if overhead.GetMemoryLimitInBytes() < 0 {
+			return 0, 0, errors.New("negative pod memory overhead")
+		}
+		return 0, 0, nil
+	}
+	return nativeEnvelope(resources, overhead)
+}
+func nativeReserve(ctx context.Context, d memoryDriver, id string, tier guard.Tier, envelope, floor uint64, original string) (guard.Contract, error) {
+	if tier == guard.Protected {
+		return d.Protect(ctx, id, envelope, floor, original)
+	}
+	return d.Reserve(ctx, id, tier, envelope, floor, original)
+}
+func (m *nativeMemory) requireObserver(ctx context.Context, d memoryDriver) error {
+	m.mu.Lock()
+	watcher := m.watcher
+	m.mu.Unlock()
+	var err error
+	if watcher == nil {
+		err = errors.New("mandatory native pressure observer unavailable")
+	} else {
+		err = watcher.Err()
+	}
+	if err != nil {
+		return errors.Join(err, d.SuspendBestEffort(ctx))
+	}
+	return nil
 }

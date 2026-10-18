@@ -29,15 +29,16 @@ accounts its earlier heap. Sources:
 `guard` owns durable per-node reservations and the best-effort host hierarchy.
 Tier comes from the reviewed runtime binding, never Kubernetes zero-request
 BestEffort/Burstable QoS or tenant-supplied labels. The full-request accounting
-handler is best-effort; other workloads retain protection. Unknown or unbounded
-contracts cannot create speculative room.
+handler is best-effort; other workloads retain protection. Unknown contracts cannot create speculative room. Protected contracts have an
+explicit finite or observed mode, selected from the actual kubelet original
+`memory.max`, never requests, labels or a partial CRI sum of container limits.
 
 All values are bytes. Given live physical memory `P`, allocatable `A`, actual
 essential host requirement `H` and the actual eviction requirement `E`:
 
 ```text
 usable room = min(A, max(0, P - H - E))
-best-effort hard bound = max(0, usable room - protected envelopes)
+best-effort hard bound = max(0, usable room - sum(max(finite envelope, actual charges)) - observed protected charges)
 ```
 
 Allocatable already excludes reservations and eviction accounting. Taking the
@@ -46,15 +47,19 @@ reservations twice. Effective pod envelopes include guest memory and the exact
 RuntimeClass/Pod overhead once; parent and child cgroup usage are not summed.
 Replacement sandboxes may share one kubelet pod identity: its protected envelope
 is reserved once, while each sandbox has a separate runtime-owned child. The
-guard never creates or overwrites kubelet's original pod parent. Its kernel limit
-must be finite and agree with the effective pod envelope before admission.
+guard never creates or overwrites kubelet's original pod parent. A finite kernel limit
+must agree with the effective pod envelope before admission. An unlimited
+original selects observed protection: its actual charged bytes count exactly
+once, but its request is never treated as a future maximum. The private child
+retains `memory.high=max` and `memory.max=max`; original caps are never edited.
 There is no fixed idle margin, queue reservation or private pool.
 
 Before first guest allocation, the aggregate and per-sandbox host cgroups must
-exist with `memory.high` and finite `memory.max`. Best-effort children disable
+exist with the matching typed contract. Best-effort children require finite
+`memory.high`/`memory.max`, disable
 swap and use group OOM containment; protected settings do not widen kubelet's
-kill policy. All VMM, shim, I/O processes and guest backing allocations belong
-inside those bounds. A protected create or growth first shrinks the best-effort
+kill policy. All BE VMM, shim, I/O processes and guest backing allocations belong
+inside those bounds. A finite protected create or growth first shrinks the best-effort
 bound, attempts reclaim, and observes actual charged bytes below that bound.
 Insufficient or stalled reclaim escalates only within the best-effort subtree.
 Writing a limit, freeing guest pages or issuing a kill is not evidence that
@@ -72,6 +77,47 @@ their aggregate or parent rather than credited as freed bytes. Released markers
 survive until ordinary runtime metadata deletion finishes, making either crash
 ordering recoverable. Unknown/unreserved pod residue remains host use. Unsupported
 factory, remote or checkpoint paths fail closed, never bypassing the allocation barrier.
+
+
+## Observed protection and failure boundaries
+
+Uncapped protected allocation remains a normal kernel allocation, not a new CRI
+request. Its future burst is unknown. PSI reports stalls asynchronously and the
+kubelet reacts at eviction thresholds; neither provides a synchronous reservation
+before every page fault. This runtime does not promise zero global host OOMs.
+BE ancestry, finite VM/overhead limits, OOM adjustment and BE-first kubelet eviction
+remain enforced. Acceptance must observe BE-only victims and protected continuity
+under simultaneous anonymous growth and stalled reclaim on the supported worker.
+
+Every BE allocation requires a live installed PSI observer and a fresh physical
+budget read. Observer startup, destruction or reconciliation failure latches BE
+closed and revokes the aggregate bound to zero. Reclaim and kill requests do not
+free accounting credit: current charges are read back and an unsuccessful release
+remains an error. Protected creation may proceed with BE revoked when accounting
+is unavailable; it never obtains an invented finite reservation. Missing or
+unowned residents remain essential host usage, rather than being excluded.
+
+Finite and observed protected usage are sampled in the same bracketing physical
+read. Only finite resident bytes offset finite future reservations in the
+MemAvailable bound. A large observed resident cannot cancel another pod's finite
+unconsumed reservation. A live original/private cgroup identity is checked on
+observed allocations and both sides of each mode change.
+
+The state format is version 4, with an explicit memory mode. Version 3 is accepted
+only as finite and rewritten as typed state; unknown modes and malformed records
+fail closed. A finite-to-observed resize records intent before removing the
+runtime-owned private high/max, and only after the original is actually unlimited.
+Restart replays that intent so a stale finite private cap is not left behind.
+Observed-to-finite requires the original's full enforced cap, charged bytes at or
+below that cap and BE fencing before the finite contract becomes authoritative.
+No transition restores or relaxes kubelet-owned caps.
+
+Downgrade is explicit: an old version-3 reader rejects version-4 state (including
+unknown mode fields); do not restart it against a live observed contract. Drain
+and remove the owning sandbox contracts through ordinary CRI lifecycle first,
+then replace the node through the supported immutable rollback path. Never delete
+runtime state to force adoption. The old 9030 rollout is unchanged until the new
+artifact, scoped effective config and typed readback are available.
 
 ## Node-pressure victim order
 
@@ -100,10 +146,11 @@ installer-base does not change core boot assets. The stack has distinct immutabl
 component identities and an installer digest. Source publication never retargets
 fleet pins, handlers or nodes.
 
-The supported native rollout requires finite protected pod envelopes, including
-essential DaemonSets. The Foundation preflight refuses missing limits rather
-than inventing a cap or borrowing a privileged identity. Resolve a refusal with
-that workload's existing owner before an image upgrade. The runtime never wipes
+The next native runtime supports requests-only protected residents through
+observed protection, without a CNI, CSI or identity allowlist or a new hard cap.
+Foundation must pair its typed preflight with the matching published native
+artifact before selecting this mode. The older 9030 artifact and its finite-only
+preflight remain a valid pair; source changes do not retarget either. The runtime never wipes
 containerd state, tenant data or a volume to manufacture adoption success.
 
 Use the existing Foundation node-day2 lifecycle on one drained supported worker,

@@ -7,6 +7,7 @@ import (
 	runtimespec "github.com/opencontainers/runtime-spec/specs-go"
 	runtime "k8s.io/cri-api/pkg/apis/runtime/v1"
 
+	"github.com/SylphxAI/talos-images/host-memory/guard"
 	containerstore "github.com/containerd/containerd/v2/internal/cri/store/container"
 	sandboxstore "github.com/containerd/containerd/v2/internal/cri/store/sandbox"
 )
@@ -15,8 +16,8 @@ import (
 // invoked from a patched upstream code path; none of them starts a daemon.
 
 func (c *criService) startNativeMemory() {
-	c.hostMemory = newNativeMemory(openNativeGuard, c.nativeInventory, c.nativeSandboxLive, func(reconcile func(context.Context) error) (interface{ Close() error }, error) {
-		return startNativePressureWatcher(nativePressurePath, reconcile, nativeReconcileLimit)
+	c.hostMemory = newNativeMemory(openNativeGuard, c.nativeInventory, c.nativeSandboxLive, func(reconcile func(context.Context) error, failure func(error)) (nativeObserver, error) {
+		return startNativePressureWatcher(nativePressurePath, reconcile, nativeReconcileLimit, failure)
 	})
 }
 
@@ -91,9 +92,7 @@ func (c *criService) nativeContainerResize(ctx context.Context, cntr containerst
 	if oldSet == newSet && oldLimit == newLimit {
 		return nil
 	}
-	if !newSet {
-		return fmt.Errorf("container %s cannot remove its memory limit on a native host-memory node", cntr.ID)
-	}
+
 	sb, err := c.sandboxStore.Get(cntr.SandboxID)
 	if err != nil {
 		return err
@@ -101,6 +100,14 @@ func (c *criService) nativeContainerResize(ctx context.Context, cntr containerst
 	contract, err := c.hostMemory.admitted(ctx, sb.ID)
 	if err != nil {
 		return err
+	}
+	if contract.Mode == guard.Observed {
+		// No invented aggregate of finite siblings: retain the original kernel caps
+		// and revalidate ownership/mode before the actual container update.
+		return c.hostMemory.fence(ctx, sb.ID)
+	}
+	if !newSet {
+		return fmt.Errorf("container %s cannot remove its memory limit inside a finite envelope", cntr.ID)
 	}
 	_, overhead := nativeSandboxResources(sb)
 	var others []int64

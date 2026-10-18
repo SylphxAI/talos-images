@@ -379,10 +379,14 @@ type budgetProbe struct {
 	calls  [][]string
 }
 
-func (b *budgetProbe) read(originals []string) (Budget, error) {
+func (b *budgetProbe) read(originals []ProtectedOriginal) (Budget, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.calls = append(b.calls, append([]string(nil), originals...))
+	paths := make([]string, len(originals))
+	for i, o := range originals {
+		paths[i] = o.Path
+	}
+	b.calls = append(b.calls, paths)
 	return b.budget, b.err
 }
 

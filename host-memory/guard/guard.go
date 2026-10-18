@@ -21,6 +21,21 @@ import (
 	"time"
 )
 
+// MemoryMode separates a hard future envelope from uncapped observed usage.
+// Observed does not reserve a request-sized maximum or intercept page faults.
+type MemoryMode string
+
+const (
+	Finite   MemoryMode = "finite"
+	Observed MemoryMode = "observed-protected"
+)
+
+// ProtectedOriginal is a deduplicated pod accounting boundary, not a class allowlist.
+type ProtectedOriginal struct {
+	Path string
+	Mode MemoryMode
+}
+
 type Tier string
 
 const (
@@ -62,11 +77,13 @@ var (
 // Budget is one live node observation in bytes. Physical, Allocatable,
 // Essential and Eviction are the exactly-once node bounds. Available is the
 // minimum MemAvailable across bracketing reads; ProtectedResident is the
-// minimum observed sum of memory.current of the passed protected originals;
+// minimum observed sum of finite protected originals only; ObservedResident
+// separately reports uncapped protected use without offsetting future credit;
 // BestEffortResident is the minimum observed best-effort aggregate current.
 type Budget struct {
 	Physical, Allocatable, Essential, Eviction       uint64
 	Available, ProtectedResident, BestEffortResident uint64
+	ObservedResident                                 uint64
 }
 
 // Contract is a typed snapshot. Envelope/Floor are admitted and enforced (zero
@@ -75,6 +92,7 @@ type Budget struct {
 type Contract struct {
 	ID       string
 	Tier     Tier
+	Mode     MemoryMode
 	State    State
 	Envelope uint64
 	Floor    uint64
@@ -104,13 +122,13 @@ type Kernel interface {
 }
 
 // Config.NodeBudget receives the sorted, deduplicated absolute kubelet pod
-// parents of credit-bearing protected contracts. It is called while the Guard
+// parents and explicit modes of all protected contracts. It is called while the Guard
 // holds its node lock and must never call back into the Guard.
 type Config struct {
 	CgroupRoot       string
 	PodRoot          string
 	StateDir         string
-	NodeBudget       func(protectedOriginals []string) (Budget, error)
+	NodeBudget       func(protectedOriginals []ProtectedOriginal) (Budget, error)
 	BootID           string
 	Kernel           Kernel
 	OperationTimeout time.Duration
@@ -118,15 +136,16 @@ type Config struct {
 }
 
 type Guard struct {
-	config   Config
-	podRoot  string
-	kernel   Kernel
-	lock     io.Closer
-	store    *stateStore
-	serial   chan struct{}
-	closed   bool
-	view     atomic.Pointer[map[string]Contract]
-	pageSize uint64
+	config            Config
+	podRoot           string
+	kernel            Kernel
+	lock              io.Closer
+	store             *stateStore
+	serial            chan struct{}
+	closed            bool
+	observationFailed atomic.Bool
+	view              atomic.Pointer[map[string]Contract]
+	pageSize          uint64
 }
 
 // errPopulated is the held release case whose wait may happen outside the lock.
@@ -239,6 +258,11 @@ func Open(c Config) (_ *Guard, err error) {
 	if err = g.settle(ctx, true); err != nil {
 		return nil, err
 	}
+	if s.legacy {
+		if err = s.commit(s.records, identity); err != nil {
+			return nil, err
+		}
+	}
 	if g.live() {
 		if fenceErr := g.reconcile(ctx); fenceErr != nil {
 			hold, holdCancel := context.WithTimeout(context.Background(), c.ReclaimTimeout)
@@ -267,12 +291,26 @@ func Open(c Config) (_ *Guard, err error) {
 // only after the kubelet original already enforces it and its charges fit.
 // An unchanged request is an idempotent re-fence without admission.
 func (g *Guard) Reserve(ctx context.Context, id string, tier Tier, envelope, floor uint64, originalParent string) (Contract, error) {
+	return g.reserve(ctx, id, tier, envelope, floor, originalParent, false)
+}
+
+// Protect selects finite versus observed from the actual kubelet memory.max,
+// never from requests or CRI's possibly partial sum of limited containers.
+func (g *Guard) Protect(ctx context.Context, id string, envelope, floor uint64, originalParent string) (Contract, error) {
+	return g.reserve(ctx, id, Protected, envelope, floor, originalParent, true)
+}
+
+func (g *Guard) reserve(ctx context.Context, id string, tier Tier, envelope, floor uint64, originalParent string, allowObserved bool) (Contract, error) {
 	ctx, cancel, err := g.enter(ctx)
 	if err != nil {
 		return Contract{}, err
 	}
 	defer g.leave(cancel)
-	if err = validateRequest(id, tier, envelope, floor); err != nil {
+	checkEnvelope, checkFloor := envelope, floor
+	if allowObserved && envelope == 0 && floor == 0 {
+		checkEnvelope, checkFloor = 1, 1
+	}
+	if err = validateRequest(id, tier, checkEnvelope, checkFloor); err != nil {
 		return Contract{}, err
 	}
 	original, err := g.original(originalParent)
@@ -284,6 +322,9 @@ func (g *Guard) Reserve(ctx context.Context, id string, tier Tier, envelope, flo
 	}
 	if err = g.settle(ctx, false); err != nil {
 		return Contract{}, err
+	}
+	if tier == BestEffort && g.observationFailed.Load() {
+		return Contract{}, errors.New("host-memory: mandatory observation unavailable")
 	}
 	old, exists := g.store.records[id]
 	if exists {
@@ -301,13 +342,34 @@ func (g *Guard) Reserve(ctx context.Context, id string, tier Tier, envelope, flo
 	if exists && tier == Protected && old.OriginalID != originalID {
 		return Contract{}, errors.New("host-memory: kubelet pod cgroup replaced")
 	}
+	if limit == 0 {
+		if !allowObserved || tier != Protected {
+			return Contract{}, errors.New("host-memory: finite kubelet pod memory.max required")
+		}
+		if exists && old.Mode == Observed {
+			return g.refence(ctx, old)
+		}
+		if exists {
+			return g.changeMode(ctx, old, Observed, 0, 0)
+		}
+		return g.admit(ctx, record{ID: id, Tier: Protected, Mode: Observed, State: StatePending, Original: original, OriginalID: originalID, Parent: privateParent(Protected, id, original), Boot: g.config.BootID})
+	}
+	if envelope == 0 || floor == 0 {
+		return Contract{}, errors.New("host-memory: finite original requires full positive envelope")
+	}
+	if exists && old.Mode == Observed {
+		if !g.pageEqual(limit, envelope) {
+			return Contract{}, errors.New("host-memory: finite original differs from envelope")
+		}
+		return g.changeMode(ctx, old, Finite, envelope, floor)
+	}
 	changed := !exists || old.Envelope != envelope || old.Floor != floor
 	if changed && !g.pageEqual(limit, envelope) {
 		return Contract{}, fmt.Errorf("host-memory: kubelet pod memory.max %d is not the full contract envelope %d", limit, envelope)
 	}
 	switch {
 	case !exists:
-		return g.admit(ctx, record{ID: id, Tier: tier, State: StatePending, Original: original, OriginalID: originalID, Parent: privateParent(tier, id, original), Intent: envelope, IntentFloor: floor, Boot: g.config.BootID})
+		return g.admit(ctx, record{ID: id, Tier: tier, Mode: Finite, State: StatePending, Original: original, OriginalID: originalID, Parent: privateParent(tier, id, original), Intent: envelope, IntentFloor: floor, Boot: g.config.BootID})
 	case !changed:
 		return g.refence(ctx, old)
 	case tier == BestEffort:
@@ -338,6 +400,9 @@ func (g *Guard) Fence(ctx context.Context, id string) (Contract, error) {
 	r, ok := g.store.records[id]
 	if !ok || r.State != StateAdmitted {
 		return Contract{}, fmt.Errorf("host-memory: contract %s is not admitted", id)
+	}
+	if r.Tier == BestEffort && g.observationFailed.Load() {
+		return Contract{}, errors.New("host-memory: mandatory observation unavailable")
 	}
 	return g.refence(ctx, r)
 }
@@ -448,7 +513,7 @@ func (g *Guard) Close() error {
 // eviction are subtracted only from physical memory, never from allocatable.
 func UsableRoom(b Budget) (uint64, error) {
 	if b.Physical == 0 || b.Allocatable == 0 || b.Allocatable > b.Physical || b.Physical > math.MaxInt64 ||
-		b.Available > b.Physical || b.ProtectedResident > b.Physical || b.BestEffortResident > b.Physical {
+		b.Available > b.Physical || b.ProtectedResident > b.Physical || b.ObservedResident > b.Physical || b.BestEffortResident > b.Physical {
 		return 0, errors.New("host-memory: unknown/inconsistent node budget")
 	}
 	deduction, err := add(b.Essential, b.Eviction)
@@ -508,14 +573,14 @@ func (g *Guard) unlockNode() { g.publish(); g.serial <- struct{}{} }
 func (g *Guard) publish() {
 	view := make(map[string]Contract, len(g.store.records))
 	for id, r := range g.store.records {
-		view[id] = Contract{ID: r.ID, Tier: r.Tier, State: r.State, Envelope: r.Envelope, Floor: r.Floor, Original: "/" + r.Original, Parent: "/" + r.Parent, Boot: r.Boot}
+		view[id] = Contract{ID: r.ID, Tier: r.Tier, Mode: r.Mode, State: r.State, Envelope: r.Envelope, Floor: r.Floor, Original: "/" + r.Original, Parent: "/" + r.Parent, Boot: r.Boot}
 	}
 	g.view.Store(&view)
 }
 
 func (g *Guard) contract(id string) Contract {
 	r := g.store.records[id]
-	return Contract{ID: r.ID, Tier: r.Tier, State: r.State, Envelope: r.Envelope, Floor: r.Floor, Original: "/" + r.Original, Parent: "/" + r.Parent, Boot: r.Boot}
+	return Contract{ID: r.ID, Tier: r.Tier, Mode: r.Mode, State: r.State, Envelope: r.Envelope, Floor: r.Floor, Original: "/" + r.Original, Parent: "/" + r.Parent, Boot: r.Boot}
 }
 
 // cleanup bounds rollback I/O even when the caller's context was cancelled.
@@ -528,7 +593,7 @@ func (g *Guard) admit(ctx context.Context, r record) (Contract, error) {
 	if err := validateOverlap(candidate); err != nil {
 		return Contract{}, err
 	}
-	if r.Tier == Protected {
+	if r.Tier == Protected && r.Mode != Observed {
 		if _, _, err := g.bounds(ctx, candidate, g.store.records); err != nil {
 			return Contract{}, err
 		}
@@ -559,7 +624,7 @@ func (g *Guard) install(ctx context.Context, r record) error {
 	if r.Tier == Protected {
 		// Shrink/reclaim/kill best-effort to the bound that already includes
 		// this intent BEFORE any protected cgroup can be delegated.
-		if err := g.reconcile(ctx); err != nil {
+		if err := g.reconcileProtected(ctx, r); err != nil {
 			return err
 		}
 		if err := g.enable(ctx, r.Original); err != nil {
@@ -569,7 +634,7 @@ func (g *Guard) install(ctx context.Context, r record) error {
 	if err := g.kernel.Mkdir(ctx, r.Parent); err != nil {
 		return err
 	}
-	if err := g.applyPrivate(ctx, r.Tier, r.Parent, r.Intent, r.IntentFloor); err != nil {
+	if err := g.applyRecord(ctx, r, r.Intent, r.IntentFloor); err != nil {
 		return err
 	}
 	if err := g.enable(ctx, r.Parent); err != nil {
@@ -606,11 +671,23 @@ func (g *Guard) refence(ctx context.Context, r record) (Contract, error) {
 		}
 		return Contract{}, fmt.Errorf("host-memory: contract %s private cgroup emptied by kernel", r.ID)
 	}
-	if err = g.applyPrivate(ctx, r.Tier, r.Parent, r.Envelope, r.Floor); err != nil {
+	if err = g.applyRecord(ctx, r, r.Envelope, r.Floor); err != nil {
 		return Contract{}, err
 	}
-	if err = g.reconcile(ctx); err != nil {
+	if err = g.reconcileProtected(ctx, r); err != nil {
 		return Contract{}, err
+	}
+	if r.Mode == Observed {
+		if err = g.checkOriginal(ctx, r, Observed); err != nil {
+			return Contract{}, err
+		}
+		identity, err := g.kernel.Identity(ctx, r.Parent)
+		if err != nil {
+			return Contract{}, err
+		}
+		if identity != r.ParentID {
+			return Contract{}, errors.New("host-memory: private cgroup replaced during observed fence")
+		}
 	}
 	return g.contract(r.ID), nil
 }
@@ -724,7 +801,7 @@ func (g *Guard) releaseLocked(ctx context.Context, id string) (string, error) {
 			return "", nil
 		}
 	}
-	if r.State == StateAdmitted && r.Intent > 0 {
+	if r.State == StateAdmitted && r.Intent > 0 && r.NextMode == "" {
 		if err := g.settleGrowth(ctx, r); err != nil {
 			return "", err
 		}
@@ -764,6 +841,12 @@ func (g *Guard) settle(ctx context.Context, recovering bool) error {
 		case StatePending:
 			err = g.rollbackPending(ctx, r)
 		case StateAdmitted:
+			if r.NextMode != "" {
+				if err = g.settleMode(ctx, r); err != nil {
+					break
+				}
+				r = g.store.records[r.ID]
+			}
 			if r.Intent > 0 {
 				if err = g.settleGrowth(ctx, r); err != nil {
 					break
@@ -778,7 +861,7 @@ func (g *Guard) settle(ctx context.Context, recovering bool) error {
 			if err == nil && !present {
 				err = g.markReleased(r)
 			} else if err == nil && recovering {
-				err = g.applyPrivate(ctx, r.Tier, r.Parent, r.Envelope, r.Floor)
+				err = g.applyRecord(ctx, r, r.Envelope, r.Floor)
 			}
 		case StateReleasing:
 			err = g.finishRelease(ctx, r)
@@ -830,7 +913,7 @@ func (g *Guard) rollbackPending(ctx context.Context, r record) error {
 		if err = g.store.put(next); err != nil {
 			return err
 		}
-		return g.applyPrivate(ctx, r.Tier, r.Parent, next.Envelope, next.Floor)
+		return g.applyRecord(ctx, next, next.Envelope, next.Floor)
 	}
 	if present {
 		if err = g.removeTree(ctx, r.Parent); err != nil {
@@ -897,7 +980,7 @@ func (g *Guard) finishRelease(ctx context.Context, r record) error {
 }
 
 func (g *Guard) markReleased(r record) error {
-	r.State, r.Intent, r.IntentFloor = StateReleased, 0, 0
+	r.State, r.Intent, r.IntentFloor, r.NextMode = StateReleased, 0, 0, ""
 	return g.store.put(r)
 }
 
@@ -959,7 +1042,7 @@ func with(records map[string]record, r record) map[string]record {
 func priorBootTombstones(records map[string]record) map[string]record {
 	out := make(map[string]record, len(records))
 	for id, r := range records {
-		r.State, r.Intent, r.IntentFloor = StateReleased, 0, 0
+		r.State, r.Intent, r.IntentFloor, r.NextMode = StateReleased, 0, 0, ""
 		out[id] = r
 	}
 	return out
@@ -1011,9 +1094,15 @@ func (g *Guard) bounds(ctx context.Context, records, before map[string]record) (
 		keys = append(keys, original)
 	}
 	sort.Strings(keys)
-	originals := make([]string, len(keys))
+	originals := make([]ProtectedOriginal, len(keys))
 	for i, original := range keys {
-		originals[i] = "/" + original
+		mode := Observed
+		for _, r := range records {
+			if r.State != StateReleased && r.Tier == Protected && r.Original == original && (r.Mode != Observed || r.NextMode == Finite) {
+				mode = Finite
+			}
+		}
+		originals[i] = ProtectedOriginal{Path: "/" + original, Mode: mode}
 	}
 	b, err := g.config.NodeBudget(originals)
 	if err != nil {
@@ -1073,6 +1162,9 @@ func (g *Guard) bounds(ctx context.Context, records, before map[string]record) (
 		return 0, 0, err
 	}
 	bound := min(sub(room, charged), live)
+	if g.observationFailed.Load() {
+		bound = 0
+	}
 	return bound, min(bound, floors), nil
 }
 
@@ -1168,6 +1260,9 @@ func (g *Guard) reclaim(ctx context.Context, amount uint64) {
 // budget cannot be read or fenced: an existing finite bound is kept, an
 // unbounded one becomes zero.
 func (g *Guard) holdAggregate(ctx context.Context) error {
+	if g.hasObserved() {
+		return g.fence(ctx, 0, 0)
+	}
 	limit, err := g.number(ctx, aggregate+"/memory.max")
 	if err != nil {
 		limit = 0
@@ -1291,7 +1386,7 @@ func (g *Guard) inspectOriginal(ctx context.Context, original string) (string, u
 		return "", 0, err
 	}
 	if strings.TrimSpace(text) == "max" {
-		return "", 0, errors.New("host-memory: unlimited kubelet pod memory.max is unsupported")
+		return identity, 0, nil
 	}
 	limit, err := strconv.ParseUint(strings.TrimSpace(text), 10, 64)
 	if err != nil || limit == 0 || limit > math.MaxInt64 {
