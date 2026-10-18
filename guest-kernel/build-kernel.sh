@@ -34,6 +34,19 @@ kernel_tree() { echo "$src/kata-linux-$KERNEL_VERSION-$CONFIG_VERSION"; }
 
 need() { command -v "$1" >/dev/null || { echo "missing $1" >&2; exit 1; }; }
 
+# flex, bison and the rest are not in the lease image. The apt mirror is the
+# one host a lease can always reach; the lists are rewritten to it so the
+# install never touches the public archive.
+toolchain() {
+  command -v flex >/dev/null && command -v bison >/dev/null && return 0
+  [ "$(id -u)" = 0 ] || { echo "flex and bison are missing and there is no root to install them" >&2; exit 1; }
+  local mirror=${SYLPHX_APT_MIRROR:-http://deb.debian.org/debian}
+  printf 'deb %s trixie main\n' "$mirror" > /etc/apt/sources.list
+  rm -f /etc/apt/sources.list.d/*.sources
+  apt-get update -qq
+  apt-get install -y -qq --no-install-recommends flex bison bc libelf-dev libssl-dev >/dev/null
+}
+
 # A build lease has no route to the public internet. It fetches through the
 # build cache's upstream mirror, which keeps the host and path of the original
 # URL. Outside a lease the mirror is unset and the URL is used as written.
@@ -67,6 +80,7 @@ fetch() {
 
 setup() {
   need curl; need sha256sum; need tar; need make
+  toolchain
   mkdir -p "$src"
   fetch "https://github.com/kata-containers/kata-containers/archive/refs/tags/$KATA_VERSION.tar.gz" \
     "$src/kata-$KATA_VERSION.tar.gz" "$KATA_SHA256"
