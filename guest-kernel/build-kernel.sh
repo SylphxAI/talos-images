@@ -54,7 +54,7 @@ build_tool() {
   local extra=""
   ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && make -j "$(nproc)" $make_target >"$work/$name-build.log" 2>&1 && make install >>"$work/$name-build.log" 2>&1 ) || {
     echo "$name failed to build; the errors:" >&2
-    grep -n -iE 'error|no rule|cannot|missing' "$work/$name-build.log" | head -30 >&2
+    grep -n -iE 'error|no rule|cannot|missing|not found' "$work/$name-build.log" | head -30 >&2
     exit 1
   }
   export PATH="$prefix/bin:$PATH"
