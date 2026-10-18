@@ -49,14 +49,9 @@ build_tool() {
   # Build, then install. One invocation makes `install` race the man page
   # ahead of the binary (flex: "no rule to make target ../src/flex").
   local make_target="all"
-  # bison's Debian tarball ships no generated doc and no doc/bison.texi, so a
-  # plain `make` stops on examples/extracted.stamp. The binary is all we need.
-  [ "$name" = bison ] && make_target="src/bison"
   # --disable-dependency-tracking: the lease workspace is virtiofs, and
   # automake's .deps rename fails there with "cannot stat .deps/*.Tpo".
-  # bison: no system libtextstyle, so use the copy it ships.
   local extra=""
-  [ "$name" = bison ] && extra="--with-libtextstyle-prefix=no --without-libtextstyle-prefix"
   ( cd "$dest" && ./configure --prefix="$prefix" --disable-dependency-tracking $extra >/dev/null && make -j "$(nproc)" $make_target >"$work/$name-build.log" 2>&1 && make install >>"$work/$name-build.log" 2>&1 ) || {
     echo "$name failed to build; the errors:" >&2
     grep -n -iE 'error|no rule|cannot|missing' "$work/$name-build.log" | head -30 >&2
@@ -71,7 +66,9 @@ toolchain() {
   # the kernel build uses it too.
   build_tool m4 m4_1.4.21.orig.tar.xz f25c6ab51548a73a75558742fb031e0625d6485fe5f9155949d6486a2408ab66
   build_tool flex flex_2.6.4.orig.tar.gz e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995
-  build_tool bison bison_3.8.2.orig.tar.xz dff8a3c96dd34121828f62a7fa49e1f7765815b89e59f564e8d2a9e71c177be5
+  # The GNU release, not Debian's dfsg repack: the repack drops the generated
+  # docs and its gnulib does not compile against the lease's glibc.
+  build_tool bison bison-3.8.2.tar.gz 06c9e13bdf7eb24d4ceb6b59205a4f67c2c7e7213119644430fe82fbd14a0abb
   command -v bc >/dev/null || { echo "bc is missing" >&2; exit 1; }
   command -v gcc >/dev/null || { echo "gcc is missing" >&2; exit 1; }
 }
