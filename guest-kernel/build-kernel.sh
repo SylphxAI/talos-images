@@ -148,15 +148,20 @@ setup() {
   fi
 
   builder=$kata/tools/packaging/kernel/build-kernel.sh
-  # Kata's setup merges its own fragments and runs oldconfig. Point it at the
-  # tree we just unpacked so it does not download the kernel a second time.
-  ( cd "$src" && bash "$builder" -v "$KERNEL_VERSION" -k "$(kernel_tree)" setup )
-
-  # Our fragment wins: merge_config.sh -r lets the last file override.
   local tree
   tree=$(kernel_tree)
+  # Kata's setup merges its own fragments into .config.generated and then
+  # stops when the tree already exists, so it never writes .config. Take the
+  # merged fragments from there and add ours on top.
+  if [ ! -f "$tree/.config.generated" ]; then
+    ( cd "$src" && bash "$builder" -v "$KERNEL_VERSION" -k "$tree" setup )
+  fi
+  [ -f "$tree/.config.generated" ] || { echo "kata setup produced no config" >&2; exit 1; }
+
   cd "$tree"
-  KCONFIG_CONFIG=.config scripts/kconfig/merge_config.sh -r -n .config "$root/guest-kernel/qos.conf" >/dev/null
+  # -r: the last file wins, so our fragment overrides the stock "is not set".
+  KCONFIG_CONFIG=.config scripts/kconfig/merge_config.sh -r -n .config.generated "$root/guest-kernel/qos.conf" >"$work/merge.log" 2>&1 || {
+    echo "config merge failed:" >&2; tail -20 "$work/merge.log" >&2; exit 1; }
   make olddefconfig
   verify
 }
