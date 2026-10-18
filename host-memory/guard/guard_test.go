@@ -379,10 +379,14 @@ type budgetProbe struct {
 	calls  [][]string
 }
 
-func (b *budgetProbe) read(originals []string) (Budget, error) {
+func (b *budgetProbe) read(originals []ProtectedOriginal) (Budget, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.calls = append(b.calls, append([]string(nil), originals...))
+	paths := make([]string, len(originals))
+	for i, o := range originals {
+		paths[i] = o.Path
+	}
+	b.calls = append(b.calls, paths)
 	return b.budget, b.err
 }
 
@@ -935,7 +939,11 @@ func TestRestartSettlesPendingFirstAdmission(t *testing.T) {
 			g, c, _ := openFor(t, k)
 			k.kubelet(originalOf("q"), 300)
 			private := privateOf(Protected, "q")
-			if err := g.store.put(record{ID: "q", Tier: Protected, State: StatePending, Original: originalOf("q"), OriginalID: "kubelet", Parent: private, Intent: 300, IntentFloor: 300, Boot: c.BootID}); err != nil {
+			originalID, err := k.Identity(context.Background(), originalOf("q"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.store.put(record{ID: "q", Tier: Protected, State: StatePending, Original: originalOf("q"), OriginalID: originalID, Parent: private, Intent: 300, IntentFloor: 300, Boot: c.BootID}); err != nil {
 				t.Fatal(err)
 			}
 			k.create(private)

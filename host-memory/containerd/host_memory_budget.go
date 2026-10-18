@@ -284,9 +284,9 @@ func (r *nativeBudgetReader) cleanFile(dir string) (uint64, error) {
 
 // nativeSample is one snapshot of the disjoint direct root children and the
 // accounted pod roots (BE aggregate and each reserved protected original once).
-type nativeSample struct{ protected, bestEffort, pods, nonPodClean uint64 }
+type nativeSample struct{ protected, observed, bestEffort, pods, nonPodClean uint64 }
 
-func (r *nativeBudgetReader) sample(originals []string) (nativeSample, error) {
+func (r *nativeBudgetReader) sample(originals []guard.ProtectedOriginal) (nativeSample, error) {
 	entries, err := os.ReadDir(r.cgroupRoot)
 	if err != nil {
 		return nativeSample{}, err
@@ -311,18 +311,27 @@ func (r *nativeBudgetReader) sample(originals []string) (nativeSample, error) {
 	s := nativeSample{bestEffort: be.current}
 	podClean := be.clean
 	for _, original := range originals {
-		o, err := r.cgroup(original, true)
+		o, err := r.cgroup(original.Path, true)
 		if err != nil {
 			return nativeSample{}, err
 		}
-		if s.protected, err = nativeAdd(s.protected, o.current); err != nil {
+		if original.Mode == guard.Observed {
+			s.observed, err = nativeAdd(s.observed, o.current)
+		} else {
+			s.protected, err = nativeAdd(s.protected, o.current)
+		}
+		if err != nil {
 			return nativeSample{}, err
 		}
 		if podClean, err = nativeAdd(podClean, o.clean); err != nil {
 			return nativeSample{}, err
 		}
 	}
-	if s.pods, err = nativeAdd(s.protected, s.bestEffort); err != nil {
+	accounted, err := nativeAdd(s.protected, s.observed)
+	if err != nil {
+		return nativeSample{}, err
+	}
+	if s.pods, err = nativeAdd(accounted, s.bestEffort); err != nil {
 		return nativeSample{}, err
 	}
 	// Concurrent counter movement can make the pod subset briefly exceed the
@@ -331,14 +340,17 @@ func (r *nativeBudgetReader) sample(originals []string) (nativeSample, error) {
 	return s, nil
 }
 
-func nativeOriginals(originals []string) error {
+func nativeOriginals(originals []guard.ProtectedOriginal) error {
 	for i, original := range originals {
-		if _, err := nativeOriginal(original); err != nil {
+		if _, err := nativeOriginal(original.Path); err != nil {
 			return err
 		}
+		if original.Mode != guard.Finite && original.Mode != guard.Observed {
+			return errors.New("unknown protected accounting mode")
+		}
 		for _, other := range originals[:i] {
-			if other == original || strings.HasPrefix(original, other+"/") || strings.HasPrefix(other, original+"/") {
-				return fmt.Errorf("overlapping reserved protected originals %s and %s", other, original)
+			if other.Path == original.Path || strings.HasPrefix(original.Path, other.Path+"/") || strings.HasPrefix(other.Path, original.Path+"/") {
+				return fmt.Errorf("overlapping reserved protected originals %s and %s", other.Path, original.Path)
 			}
 		}
 	}
@@ -348,7 +360,7 @@ func nativeOriginals(originals []string) error {
 // read is Guard's live NodeBudget callback. originals are the deduplicated
 // reserved protected kubelet pod parents. Only those and the BE aggregate are
 // pod charges: dying or unreserved kubepods residue counts as host use.
-func (r *nativeBudgetReader) read(originals []string) (guard.Budget, error) {
+func (r *nativeBudgetReader) read(originals []guard.ProtectedOriginal) (guard.Budget, error) {
 	k, err := r.load()
 	if err != nil {
 		return guard.Budget{}, err
@@ -431,6 +443,7 @@ func (r *nativeBudgetReader) read(originals []string) (guard.Budget, error) {
 		Eviction:           max(hard, soft),
 		Available:          min(before.available, after.available),
 		ProtectedResident:  min(first.protected, second.protected),
+		ObservedResident:   min(first.observed, second.observed),
 		BestEffortResident: min(first.bestEffort, second.bestEffort),
 	}, nil
 }

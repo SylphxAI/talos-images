@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/containerd/log"
@@ -21,14 +22,17 @@ const nativePressureTrigger = "some 1 500000"
 // blocks in poll(2); there is no timer or polling interval. It lives inside the
 // containerd process and stops with the CRI service.
 type nativePressureWatcher struct {
-	wake    *os.File // write end; one byte wakes poll(2) for shutdown
-	wait    *os.File // read end, polled by run
-	done    chan struct{}
-	cancel  context.CancelFunc
-	timeout time.Duration
+	wake      *os.File // write end; one byte wakes poll(2) for shutdown
+	wait      *os.File // read end, polled by run
+	done      chan struct{}
+	cancel    context.CancelFunc
+	timeout   time.Duration
+	mu        sync.Mutex
+	failure   error
+	onFailure func(error)
 }
 
-func startNativePressureWatcher(path string, reconcile func(context.Context) error, timeout time.Duration) (*nativePressureWatcher, error) {
+func startNativePressureWatcher(path string, reconcile func(context.Context) error, timeout time.Duration, failure ...func(error)) (*nativePressureWatcher, error) {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -38,11 +42,11 @@ func startNativePressureWatcher(path string, reconcile func(context.Context) err
 		unix.Close(fd)
 		return nil, fmt.Errorf("install PSI trigger: %w", err)
 	}
-	return watchNativePressure(fd, reconcile, timeout)
+	return watchNativePressure(fd, reconcile, timeout, failure...)
 }
 
 // watchNativePressure owns fd and invokes reconcile on POLLPRI.
-func watchNativePressure(fd int, reconcile func(context.Context) error, timeout time.Duration) (*nativePressureWatcher, error) {
+func watchNativePressure(fd int, reconcile func(context.Context) error, timeout time.Duration, failure ...func(error)) (*nativePressureWatcher, error) {
 	var pipe [2]int
 	if err := unix.Pipe2(pipe[:], unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
 		unix.Close(fd)
@@ -51,6 +55,9 @@ func watchNativePressure(fd int, reconcile func(context.Context) error, timeout 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := &nativePressureWatcher{wake: os.NewFile(uintptr(pipe[1]), "native-pressure-wake"), wait: os.NewFile(uintptr(pipe[0]), "native-pressure-wait"),
 		done: make(chan struct{}), cancel: cancel, timeout: timeout}
+	if len(failure) > 0 {
+		w.onFailure = failure[0]
+	}
 	go w.run(ctx, fd, pipe[0], reconcile)
 	return w, nil
 }
@@ -66,6 +73,7 @@ func (w *nativePressureWatcher) run(ctx context.Context, fd, stop int, reconcile
 			if errors.Is(err, unix.EINTR) {
 				continue
 			}
+			w.fail(err)
 			log.L.WithError(err).Error("native host memory pressure watcher stopped")
 			return
 		}
@@ -73,13 +81,17 @@ func (w *nativePressureWatcher) run(ctx context.Context, fd, stop int, reconcile
 			return
 		}
 		if fds[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+			w.fail(errors.New("native host memory pressure monitor was destroyed"))
 			log.L.Error("native host memory pressure monitor was destroyed")
 			return
 		}
 		if fds[0].Revents&unix.POLLPRI != 0 {
 			bounded, cancel := context.WithTimeout(ctx, w.timeout)
 			if err := reconcile(bounded); err != nil && ctx.Err() == nil {
-				log.L.WithError(err).Warn("native host memory pressure reconcile failed")
+				w.fail(err)
+				log.L.WithError(err).Error("native host memory pressure reconcile failed; BE disabled")
+				cancel()
+				return
 			}
 			cancel()
 		}
@@ -97,4 +109,29 @@ func (w *nativePressureWatcher) Close() error {
 		return errors.Join(err, errors.New("native host memory pressure watcher did not stop"))
 	}
 	return errors.Join(err, w.wake.Close(), w.wait.Close())
+}
+
+// Err checks the installed kernel watcher, not a configuration promise. Failure
+// is latched: a successful unrelated allocation cannot clear a dead observer.
+func (w *nativePressureWatcher) Err() error {
+	w.mu.Lock()
+	err := w.failure
+	w.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	select {
+	case <-w.done:
+		return errors.New("native pressure observer stopped")
+	default:
+		return nil
+	}
+}
+func (w *nativePressureWatcher) fail(err error) {
+	w.mu.Lock()
+	w.failure = err
+	w.mu.Unlock()
+	if w.onFailure != nil {
+		w.onFailure(err)
+	}
 }
