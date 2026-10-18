@@ -48,11 +48,19 @@ mirror_url() {
 }
 
 fetch() {
-  local url=$1 dest=$2 sum=$3
+  local url=$1 dest=$2 sum=$3 got=0
   if [ -f "$dest" ] && echo "$sum  $dest" | sha256sum -c - >/dev/null 2>&1; then
     return
   fi
-  curl -fsSL --retry 3 --max-time 600 -o "$dest.partial" "$(mirror_url "$url")"
+  # The host itself first. A lease that was not granted it fails fast, and
+  # the build cache mirror is the second try.
+  if curl -fsSL --retry 2 --max-time 240 -o "$dest.partial" "$url"; then
+    got=1
+  else
+    rm -f "$dest.partial"
+    curl -fsSL --retry 2 --max-time 240 -o "$dest.partial" "$(mirror_url "$url")" && got=1
+  fi
+  [ "$got" = 1 ] || { echo "could not fetch $url" >&2; exit 1; }
   mv "$dest.partial" "$dest"
   echo "$sum  $dest" | sha256sum -c -
 }
