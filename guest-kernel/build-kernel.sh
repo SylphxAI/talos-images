@@ -49,6 +49,8 @@ build_tool() {
   # Build, then install. One invocation makes `install` race the man page
   # ahead of the binary (flex: "no rule to make target ../src/flex").
   local make_target="all"
+  # bc's info manual needs makeinfo, which the lease image does not have.
+  [ "$name" = bc ] && make_target="-C bc all"
   # --disable-dependency-tracking: the lease workspace is virtiofs, and
   # automake's .deps rename fails there with "cannot stat .deps/*.Tpo".
   local extra=""
