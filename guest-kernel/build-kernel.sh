@@ -34,17 +34,28 @@ kernel_tree() { echo "$src/kata-linux-$KERNEL_VERSION-$CONFIG_VERSION"; }
 
 need() { command -v "$1" >/dev/null || { echo "missing $1" >&2; exit 1; }; }
 
-# flex, bison and the rest are not in the lease image. The apt mirror is the
-# one host a lease can always reach; the lists are rewritten to it so the
-# install never touches the public archive.
+# flex and bison are not in the lease image, and a lease has no root, so apt
+# cannot add them. Their sources are vendored and checked, and they build
+# into the workspace with the compiler the image already has. m4 is already
+# there; bison needs it.
+build_tool() {
+  local name=$1 archive=$2 sum=$3
+  command -v "$name" >/dev/null && return 0
+  local prefix=$work/tools dest=$work/toolsrc/$name
+  [ -x "$prefix/bin/$name" ] && { export PATH="$prefix/bin:$PATH"; return 0; }
+  echo "$sum  $root/guest-kernel/vendor/$archive" | sha256sum -c -
+  mkdir -p "$dest" "$prefix"
+  tar -xf "$root/guest-kernel/vendor/$archive" -C "$dest" --strip-components=1
+  ( cd "$dest" && ./configure --prefix="$prefix" >/dev/null && make -j "$(nproc)" >/dev/null && make install >/dev/null )
+  export PATH="$prefix/bin:$PATH"
+  command -v "$name" >/dev/null || { echo "built $name but it is not on PATH" >&2; exit 1; }
+}
+
 toolchain() {
-  command -v flex >/dev/null && command -v bison >/dev/null && return 0
-  [ "$(id -u)" = 0 ] || { echo "flex and bison are missing and there is no root to install them" >&2; exit 1; }
-  local mirror=${SYLPHX_APT_MIRROR:-http://deb.debian.org/debian}
-  printf 'deb %s trixie main\n' "$mirror" > /etc/apt/sources.list
-  rm -f /etc/apt/sources.list.d/*.sources
-  apt-get update -qq
-  apt-get install -y -qq --no-install-recommends flex bison bc libelf-dev libssl-dev >/dev/null
+  build_tool flex flex_2.6.4.orig.tar.gz e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995
+  build_tool bison bison_3.8.2.orig.tar.xz dff8a3c96dd34121828f62a7fa49e1f7765815b89e59f564e8d2a9e71c177be5
+  command -v bc >/dev/null || { echo "bc is missing" >&2; exit 1; }
+  command -v gcc >/dev/null || { echo "gcc is missing" >&2; exit 1; }
 }
 
 # A build lease has no route to the public internet. It fetches through the
