@@ -90,8 +90,10 @@ remain enforced. Acceptance must observe BE-only victims and protected continuit
 under simultaneous anonymous growth and stalled reclaim on the supported worker.
 
 Every BE allocation requires a live installed PSI observer and a fresh physical
-budget read. Observer startup, destruction or reconciliation failure latches BE
-closed and revokes the aggregate bound to zero. Reclaim and kill requests do not
+budget read. Observer installation failure, destruction or reconciliation failure latches BE
+closed and revokes the aggregate bound to zero. A healthy observer installation
+after a runtime restart preserves recovered BE workloads and their freshly
+reconciled bound. Reclaim and kill requests do not
 free accounting credit: current charges are read back and an unsuccessful release
 remains an error. Protected creation may proceed with BE revoked when accounting
 is unavailable; it never obtains an invented finite reservation. Missing or

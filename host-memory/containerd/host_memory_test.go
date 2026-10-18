@@ -32,6 +32,7 @@ type nativeContracts struct {
 	deny      error
 	held      map[string]bool
 	reserves  []uint64
+	suspends  int
 }
 
 func newNativeContracts() *nativeContracts {
@@ -112,9 +113,14 @@ func (d *nativeContracts) Contracts() []guard.Contract {
 	return out
 }
 
-func (d *nativeContracts) Reconcile(context.Context) error         { return nil }
-func (d *nativeContracts) SuspendBestEffort(context.Context) error { return nil }
-func (d *nativeContracts) ResumeBestEffort(context.Context) error  { return nil }
+func (d *nativeContracts) Reconcile(context.Context) error { return nil }
+func (d *nativeContracts) SuspendBestEffort(context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.suspends++
+	return nil
+}
+func (d *nativeContracts) ResumeBestEffort(context.Context) error { return nil }
 func (d *nativeContracts) Protect(ctx context.Context, id string, envelope, floor uint64, original string) (guard.Contract, error) {
 	c, err := d.Reserve(ctx, id, guard.Protected, envelope, floor, original)
 	if err == nil {
@@ -779,6 +785,9 @@ func TestNativeInstalledButFailedObserverCannotGrantBE(t *testing.T) {
 	if err := h.memory.create(context.Background(), "be", nativeCanaryHandler, nativeKataRuntime, nativePodSandboxMode, nativePod("/kubepods/pod-be", 1024, 0)); err == nil {
 		t.Fatal("installed but failed watcher accepted")
 	}
+	if h.driver.suspends == 0 {
+		t.Fatal("failed observer did not revoke BE")
+	}
 }
 
 func TestNativeBudgetObservedUsageDoesNotOffsetFiniteFutureCredit(t *testing.T) {
@@ -801,5 +810,26 @@ func TestNativeBudgetObservedUsageDoesNotOffsetFiniteFutureCredit(t *testing.T) 
 func TestNativeBudgetRejectsUnknownFirstMode(t *testing.T) {
 	if err := nativeOriginals([]guard.ProtectedOriginal{{Path: "/kubepods/poda", Mode: "unknown"}}); err == nil {
 		t.Fatal("first original bypassed mode validation")
+	}
+}
+
+func TestNativeHealthyObserverPreservesRecoveredBestEffortWorkloads(t *testing.T) {
+	h := newNativeHarness(t)
+	id := "existing-be"
+	original := "/kubepods/burstable/pod-existing"
+	parent := nativePrivateParent(id, guard.BestEffort, original)
+	h.driver.contracts[id] = guard.Contract{ID: id, Tier: guard.BestEffort, Mode: guard.Finite, State: guard.StateAdmitted, Envelope: 1024, Floor: 1024, Original: original, Parent: parent}
+	h.sandboxes = []nativeSandbox{{ID: id, Handler: nativeCanaryHandler, Parent: parent, Live: true}}
+	h.live[id] = true
+	h.memory.adopt(context.Background())
+	if h.driver.suspends != 0 {
+		t.Fatal("healthy observer restart unnecessarily revoked running BE")
+	}
+	if err := h.memory.fence(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := h.driver.Contract(id)
+	if !ok || c.State != guard.StateAdmitted || c.Envelope != 1024 {
+		t.Fatal("healthy recovered contract changed", c)
 	}
 }

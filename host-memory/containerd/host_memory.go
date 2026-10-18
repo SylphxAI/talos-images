@@ -187,11 +187,9 @@ func (m *nativeMemory) ensureLocked(ctx context.Context) error {
 	}
 	m.driver = driver
 	m.adoptLocked(ctx)
-	// Guard starts with no installed observer after a runtime restart. Revoke
-	// BE first; only an actual healthy kernel watcher may reopen admission.
-	if err := driver.SuspendBestEffort(ctx); err != nil {
-		log.G(ctx).WithError(err).Warn("native BE suspension awaiting charged-byte release")
-	}
+	// No new allocation can leave ensureLocked until the actual watcher has
+	// been installed/checked. Preserve the freshly reconciled finite cap of
+	// healthy recovered BE workloads; revoke it only on real observer failure.
 	if m.watch != nil {
 		failure := func(cause error) {
 			bounded, cancel := context.WithTimeout(context.Background(), nativeReconcileLimit)
