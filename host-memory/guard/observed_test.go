@@ -510,3 +510,64 @@ func TestClearedModeIntentCannotWriteFromAnOlderHolderSnapshot(t *testing.T) {
 		t.Fatal("fresh authoritative discovery did not work", current)
 	}
 }
+
+func TestPendingRecoveryValidatesOriginalIdentityBeforePrivateCapWrite(t *testing.T) {
+	k := newModel()
+	c, _ := configFor(t, k)
+	g, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := originalOf("p")
+	k.kubelet(original, 300)
+	parent := privateOf(Protected, "p")
+	if err = g.store.put(record{ID: "p", Tier: Protected, State: StatePending, Original: original, OriginalID: "foreign", Parent: parent, Intent: 300, IntentFloor: 300, Boot: c.BootID}); err != nil {
+		t.Fatal(err)
+	}
+	k.create(parent)
+	k.charge(parent, 50, true)
+	g.Close()
+	if opened, err := Open(c); err == nil {
+		opened.Close()
+		t.Fatal("foreign pending identity adopted")
+	}
+	if k.file(parent, "memory.max") != "max" {
+		t.Fatal("private cap written before original identity proof")
+	}
+	if k.number(aggregate+"/memory.max") != 0 {
+		t.Fatal("failed recovery left BE room")
+	}
+}
+func TestPendingRecoveryUsesTypedModeIntentBeforeRemovingAnObsoletePrivateCap(t *testing.T) {
+	k := newModel()
+	c, _ := configFor(t, k)
+	g, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := originalOf("p")
+	k.kubelet(original, 300)
+	parent := privateOf(Protected, "p")
+	identity, err := k.Identity(context.Background(), original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = g.store.put(record{ID: "p", Tier: Protected, State: StatePending, Original: original, OriginalID: identity, Parent: parent, Intent: 300, IntentFloor: 300, Boot: c.BootID}); err != nil {
+		t.Fatal(err)
+	}
+	k.create(parent)
+	k.setFile(parent, "memory.max", "300")
+	k.setFile(parent, "memory.high", "300")
+	k.charge(parent, 50, true)
+	g.Close()
+	k.setFile(original, "memory.max", "max")
+	g, err = Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	r, _ := g.Contract("p")
+	if r.Mode != Observed || r.Envelope != 0 || k.file(parent, "memory.max") != "max" {
+		t.Fatal("pending recovery kept stale private cap", r)
+	}
+}

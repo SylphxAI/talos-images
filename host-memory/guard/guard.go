@@ -256,11 +256,11 @@ func Open(c Config) (_ *Guard, err error) {
 		return nil, err
 	}
 	if err = g.settle(ctx, true); err != nil {
-		if g.hasObserved() {
-			cleanup, stop := g.cleanup(ctx)
-			err = errors.Join(err, g.fence(cleanup, 0, 0))
-			stop()
-		}
+		// Aggregate ownership/tree were verified above. Failed recovery must not
+		// leave running BE with a stale bound while its observer cannot start.
+		cleanup, stop := g.cleanup(ctx)
+		err = errors.Join(err, g.fence(cleanup, 0, 0))
+		stop()
 		return nil, err
 	}
 	if s.legacy {
@@ -959,10 +959,24 @@ func (g *Guard) rollbackPending(ctx context.Context, r record) error {
 		return err
 	}
 	if present && populated {
+		var limit uint64
+		if r.Tier == Protected {
+			originalID, actual, readErr := g.inspectOriginal(ctx, r.Original)
+			if readErr != nil {
+				return readErr
+			}
+			if originalID != r.OriginalID {
+				return errors.New("host-memory: pending original cgroup replaced")
+			}
+			limit = actual
+		}
 		next := r
 		next.State, next.Envelope, next.Floor, next.Intent, next.IntentFloor, next.ParentID = StateAdmitted, r.Intent, r.IntentFloor, 0, 0, identity
 		if err = g.store.put(next); err != nil {
 			return err
+		}
+		if r.Tier == Protected && limit == 0 && r.Mode != Observed {
+			return g.changeOriginalMode(ctx, r.Original, r.OriginalID, Observed, 0, 0)
 		}
 		return g.applyRecord(ctx, next, next.Envelope, next.Floor)
 	}
