@@ -187,6 +187,11 @@ func (s *stateStore) commit(records map[string]record, aggregateID string) error
 		d.Records = append(d.Records, r)
 	}
 	sort.Slice(d.Records, func(i, j int) bool { return d.Records[i].ID < d.Records[j].ID })
+	// Only a genuinely drained journal can be read by the legacy runtime.
+	// Preserve root/boot/aggregate ownership; never erase or relabel a contract.
+	if len(d.Records) == 0 {
+		d.Version = 3
+	}
 	if err := s.persist(d); err != nil {
 		return err
 	}

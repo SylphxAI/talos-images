@@ -122,11 +122,14 @@ a pending resize, a new durable intent re-proves its actual cap and charged
 bytes; it never infers the outcome from an old private cap. No transition
 restores or relaxes kubelet-owned caps.
 
-Downgrade is explicit: an old version-3 reader rejects version-4 state (including
-unknown mode fields); do not restart it against a live observed contract. Drain
-and remove the owning sandbox contracts through ordinary CRI lifecycle first,
-then replace the node through the supported immutable rollback path. Never delete
-runtime state to force adoption. The old 9030 rollout is unchanged until the new
+Downgrade is explicit: an old version-3 reader rejects every nonempty version-4
+journal (including unknown mode fields); do not restart it against live contracts.
+Drain and remove all owning sandbox contracts through ordinary CRI lifecycle,
+including Forget after metadata deletion. Only an exactly empty journal is
+written in the legacy version-3 shape, preserving aggregate identity, kernel boot
+and root ownership. Pending records, admitted/releasing contracts and released
+tombstones are never downgraded. Read back that empty journal before the supported
+immutable rollback. Never delete runtime state to force adoption. The old 9030 rollout is unchanged until the new
 artifact, scoped effective config and typed readback are available.
 
 ## Node-pressure victim order

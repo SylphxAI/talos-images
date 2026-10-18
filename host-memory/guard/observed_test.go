@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -569,5 +570,60 @@ func TestPendingRecoveryUsesTypedModeIntentBeforeRemovingAnObsoletePrivateCap(t 
 	r, _ := g.Contract("p")
 	if r.Mode != Observed || r.Envelope != 0 || k.file(parent, "memory.max") != "max" {
 		t.Fatal("pending recovery kept stale private cap", r)
+	}
+}
+
+func TestDrainedStateKeepsExactLegacyV3OwnershipWithoutDowngradingTombstones(t *testing.T) {
+	k := newModel()
+	g, c, _ := openFor(t, k)
+	observeFor(t, g, k, "p")
+	identity := g.store.aggregateID
+	if err := g.Release(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(c.StateDir, stateName)
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d diskState
+	if err = json.Unmarshal(data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Version != 4 || len(d.Records) != 1 || d.Records[0].State != StateReleased {
+		t.Fatal("nonempty tombstone journal downgraded", d)
+	}
+	if err = g.Forget(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := fmt.Sprintf("{\"version\":3,\"cgroup_root\":%q,\"pod_root\":%q,\"boot_id\":%q,\"aggregate_identity\":%q,\"reservations\":[]}\n", c.CgroupRoot, g.podRoot, c.BootID, identity)
+	if string(data) != expected {
+		t.Fatalf("empty state not exact legacy shape:%s", data)
+	}
+	if err = g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := Open(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	if recovered.store.aggregateID != identity || len(recovered.Contracts()) != 0 {
+		t.Fatal("empty rollback lost ownership")
+	}
+	observeFor(t, recovered, k, "next")
+	data, err = os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Version != 4 || len(d.Records) != 1 || d.Records[0].Mode != Observed {
+		t.Fatal("active observed contract used legacy format", d)
 	}
 }
