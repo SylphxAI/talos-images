@@ -1,0 +1,4 @@
+8e12677a9473d801f5302854871f11df2b80481b98cafb05dac831fed9f487aa  api/machine/machine.proto
+4406961d18a2d7a1979b0dea453ec45b2adacf8eda89389ec0ad5599c7ce610e  pkg/machinery/api/machine/machine.pb.go
+ddfc4eb8d75bb48471e274b150f0d4ec39e24277353dfe2f334b3cc4a86a6741  pkg/machinery/api/machine/machine_vtproto.pb.go
+251ec17c21361b52eca13153697f63e657bbef3149e613c86c12bfc9a60d2a83  internal/app/machined/internal/server/v1alpha1/v1alpha1_server.go
