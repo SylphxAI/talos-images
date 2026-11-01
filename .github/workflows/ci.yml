@@ -70,11 +70,23 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: bash host-memory/check.sh
 
+  efi-inventory:
+    runs-on: ${{ github.event.repository.private && 'sylphx-linux-standard' || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Read-only EFI source, wire and bootloader boundaries
+        run: bash boot-inventory/check.sh
+
   # The one required check: fails unless every job above succeeded.
   ci-ok:
     if: always()
-    needs: [check, native-runtime]
+    needs: [check, native-runtime, efi-inventory]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - run: test "${{ needs.check.result }}" = success && test "${{ needs.native-runtime.result }}" = success
+      - run: test "${{ needs.check.result }}" = success && test "${{ needs.native-runtime.result }}" = success && test "${{ needs.efi-inventory.result }}" = success

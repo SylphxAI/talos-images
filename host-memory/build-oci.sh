@@ -27,6 +27,9 @@ else
   curl -fsSL --max-time 120 https://codeload.github.com/siderolabs/talos/tar.gz/refs/tags/v1.14.1 -o "$temporary/talos.tar.gz"
   printf '%s  %s\n' 49710f8a98f9c98f88453cc2d5ebbfe5c128183785684a9defbc60ad5c76dd55 "$temporary/talos.tar.gz" | sha256sum -c -
   tar -xzf "$temporary/talos.tar.gz" -C "$temporary"
+  # Integrate the bounded, metadata-only EFI read mode into the same pinned
+  # machined source that upstream's imager graph compiles. No node operation.
+  bash "$root/boot-inventory/install.sh" "$temporary/talos-1.14.1"
   # Use upstream's complete build arguments and core boot-asset graph. A local
   # OCI named context supplies the native package without an intermediate push
   # or a credential for another artifact repository.

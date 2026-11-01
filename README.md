@@ -108,3 +108,11 @@ executables, and reproduces the kubelet victim-order regression before applying
 the correction, then proves it passing afterward. These are source/artifact
 checks, not production host-pressure acceptance.
 
+The next source-built native imager also includes an on-demand
+[`talosctl efi-inventory`](boot-inventory/README.md) mode. It resolves the
+system-disk EFI partition and returns filenames, sizes, hashes and boot identity
+through the existing authenticated Read service. It exposes no raw file or
+partition bytes. Its source tests do not establish installed boot identity,
+fallback availability or recovery acceptance on an existing node; a matching
+server and client must first be delivered through a separately authorized path.
+
