@@ -108,3 +108,18 @@ executables, and reproduces the kubelet victim-order regression before applying
 the correction, then proves it passing afterward. These are source/artifact
 checks, not production host-pressure acceptance.
 
+The reviewed native pairs are Talos **1.14.1 / containerd 2.3.5** (DE) and
+**1.14.2 / containerd 2.3.6** (FR), both with Kata 3.32.0, Cloud Hypervisor
+51.1 and kubelet 1.36.4. `host-memory/profile.sh` pins each Talos source archive,
+core containerd package and factory Kata extension separately. CI compiles and
+tests both pairs; component tags include the Talos version to avoid replacing
+another pair built from the same source revision. The main-push default stays
+1.14.1. Publish the separate FR variant after the source merges:
+
+```bash
+gh workflow run build.yml -R SylphxAI/talos-images -f talos_version=v1.14.2 -f native_host_memory=true
+```
+
+Read the completed release manifest and every digest before preparing a node
+change. Publication grants no node lifecycle or canary eligibility.
+

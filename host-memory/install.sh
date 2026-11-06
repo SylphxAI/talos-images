@@ -2,21 +2,25 @@
 set -eu
 
 # Build-time source integration only. This is never a runtime wrapper or daemon.
-if [ "$#" -ne 2 ]; then
- printf '%s\n' 'usage: install.sh <containerd-2.3.5-source> <kata-3.32.0-source>' >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+ printf '%s\n' 'usage: install.sh <containerd-source> <kata-3.32.0-source> [2.3.5|2.3.6]' >&2
  exit 2
 fi
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 containerd=$(CDPATH= cd -- "$1" && pwd)
 kata=$(CDPATH= cd -- "$2" && pwd)
+version=${3:-2.3.5}
+case "$version" in 2.3.5|2.3.6) ;; *) echo 'unsupported containerd version' >&2; exit 1 ;; esac
 module=github.com/SylphxAI/talos-images/host-memory/guard
 [ "$(cat "$kata/VERSION")" = '3.32.0' ] || { printf '%s\n' 'Kata must be exactly 3.32.0' >&2; exit 1; }
 grep -qx 'module github.com/containerd/containerd/v2' "$containerd/go.mod" || { printf '%s\n' 'containerd v2 source required' >&2; exit 1; }
 grep -qx "module $module" "$root/guard/go.mod" && [ -f "$root/guard/guard.go" ] || { printf '%s\n' 'native guard module is missing' >&2; exit 1; }
 # Every touched upstream file is pinned before mutation. No best-effort
 # patching, reversed-patch detection or source-version fallback.
-(cd "$containerd" && sha256sum -c "$root/patches/containerd-2.3.5-source.sha256")
+(cd "$containerd" && sha256sum -c "$root/patches/containerd-$version-source.sha256")
 (cd "$kata" && sha256sum -c "$root/patches/kata-3.32.0-source.sha256")
+# These patch targets are byte-identical in 2.3.5 and 2.3.6; each source set
+# above has its own complete pins, including the changed upstream go.mod.
 (cd "$containerd" && patch --batch --forward --fuzz=0 -p1 < "$root/patches/containerd-2.3.5.patch")
 # Preserve Talos's machined image-verifier integration on the new pin. This is
 # the source-compatible port of Sidero's behavior, not its removal.
