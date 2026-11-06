@@ -7,22 +7,23 @@ source_revision=${SOURCE_SHA:-$(git -C "$root" rev-parse HEAD)}
 unformatted=$(gofmt -l "$root/guard" "$root/containerd" "$root/patches" "$root/kubelet")
 if [ -n "$unformatted" ]; then printf 'Unformatted native sources:\n%s\n' "$unformatted" >&2; exit 1; fi
 nice -n 19 ionice -c3 go -C "$root/guard" test ./... -count=1
+source "$root/profile.sh"
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
-curl -fsSL --max-time 120 https://codeload.github.com/containerd/containerd/tar.gz/refs/tags/v2.3.5 -o "$scratch/containerd.tar.gz"
+curl -fsSL --max-time 120 "https://codeload.github.com/containerd/containerd/tar.gz/refs/tags/v$CONTAINERD_VERSION" -o "$scratch/containerd.tar.gz"
 curl -fsSL --max-time 120 https://codeload.github.com/kata-containers/kata-containers/tar.gz/refs/tags/3.32.0 -o "$scratch/kata.tar.gz"
-printf '%s  %s\n' a99a4dca98061064ff4cb35d27d1ec2345717e9108c822329fcec91dc72bff96 "$scratch/containerd.tar.gz" 722a022d873e6742788eca9f6ed74e8b7c4f70ffe4713144bd2e91fc3db620d0 "$scratch/kata.tar.gz" | sha256sum -c -
+printf '%s  %s\n' "$CONTAINERD_SHA256" "$scratch/containerd.tar.gz" 722a022d873e6742788eca9f6ed74e8b7c4f70ffe4713144bd2e91fc3db620d0 "$scratch/kata.tar.gz" | sha256sum -c -
 tar -xzf "$scratch/containerd.tar.gz" -C "$scratch"
 tar -xzf "$scratch/kata.tar.gz" -C "$scratch"
-nice -n 19 ionice -c3 sh "$root/install.sh" "$scratch/containerd-2.3.5" "$scratch/kata-containers-3.32.0"
+nice -n 19 ionice -c3 sh "$root/install.sh" "$scratch/containerd-$CONTAINERD_VERSION" "$scratch/kata-containers-3.32.0" "$CONTAINERD_VERSION"
 export CGO_ENABLED=0
-nice -n 19 ionice -c3 go -C "$scratch/containerd-2.3.5" test -tags no_aufs,no_btrfs,no_systemd,no_zfs ./internal/cri/server -run '^TestNative' -count=1
+nice -n 19 ionice -c3 go -C "$scratch/containerd-$CONTAINERD_VERSION" test -tags no_aufs,no_btrfs,no_systemd,no_zfs ./internal/cri/server -run '^TestNative' -count=1
 nice -n 19 ionice -c3 make -C "$scratch/kata-containers-3.32.0/src/runtime" pkg/katautils/config-settings.go PREFIX=/usr/local SKIP_GO_VERSION_CHECK=y "NATIVE_REVISION=$source_revision"
 nice -n 19 ionice -c3 go -C "$scratch/kata-containers-3.32.0/src/runtime" test ./pkg/katautils ./pkg/containerd-shim-v2 -run '^TestNative' -count=1
-nice -n 19 ionice -c3 make -C "$scratch/containerd-2.3.5" bin/containerd STATIC=1 VERSION=v2.3.5 "REVISION=$source_revision-host-memory" BUILDTAGS='no_aufs no_btrfs no_systemd no_zfs'
+nice -n 19 ionice -c3 make -C "$scratch/containerd-$CONTAINERD_VERSION" bin/containerd STATIC=1 "VERSION=v$CONTAINERD_VERSION" "REVISION=$source_revision-host-memory" BUILDTAGS='no_aufs no_btrfs no_systemd no_zfs'
 nice -n 19 ionice -c3 make -C "$scratch/kata-containers-3.32.0/src/runtime" containerd-shim-v2 PREFIX=/usr/local SKIP_GO_VERSION_CHECK=y "NATIVE_REVISION=$source_revision"
 # Actual corrected executables, not source-text assertions or mocked wrappers.
-"$scratch/containerd-2.3.5/bin/containerd" --version
+"$scratch/containerd-$CONTAINERD_VERSION/bin/containerd" --version
 "$scratch/kata-containers-3.32.0/src/runtime/containerd-shim-kata-v2" --version
 
 curl -fsSL --max-time 120 https://codeload.github.com/kubernetes/kubernetes/tar.gz/refs/tags/v1.36.4 -o "$scratch/kubernetes.tar.gz"

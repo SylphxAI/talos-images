@@ -13,7 +13,7 @@ The pinned containerd, Kata and kubelet integration in this directory builds int
 the immutable Talos runtime stack. It is not a CRI executable wrapper, privileged
 Pod, second scheduler or desk daemon.
 
-Stock containerd 2.3.5 calls NRI `RunPodSandbox` after starting the sandbox; that
+Stock containerd 2.3.5 and 2.3.6 call NRI `RunPodSandbox` after starting the sandbox; that
 hook cannot pause before first-guest allocation. Its standalone sandbox-controller
 proxy also needs recovery and resize-routing repairs. Stock Kata 3.32.0 moves
 its shim into the pod cgroup before starting the VMM, but moving a process does
@@ -23,6 +23,16 @@ accounts its earlier heap. Sources:
 [containerd sandbox start](https://github.com/containerd/containerd/blob/v2.3.5/internal/cri/server/sandbox_run.go),
 [Kata host cgroups](https://github.com/kata-containers/kata-containers/blob/3.32.0/docs/design/host-cgroups.md),
 [Linux memory ownership](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-ownership).
+
+The FR port was read against the tagged primary sources on 2026-11-06:
+[Talos 1.14.2 package graph](https://github.com/siderolabs/talos/blob/v1.14.2/Makefile),
+[its containerd ABI](https://github.com/siderolabs/talos/blob/v1.14.2/pkg/machinery/constants/constants.go),
+[containerd 2.3.6](https://github.com/containerd/containerd/tree/v2.3.6) and
+[the 1.14.2 factory catalog](https://factory.talos.dev/version/v1.14.2/extensions/official).
+Every touched containerd source file is identical to 2.3.5; upstream `go.mod`
+has a separate 2.3.6 pin. Both strict patches, including Talos image verification,
+are retained and CI compiles the corrected executables for each profile. Guest
+assets remain those of the release-matched factory extension.
 
 ## Accounting and ordering
 

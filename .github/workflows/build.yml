@@ -44,9 +44,9 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -61,7 +61,7 @@ jobs:
       # which the default docker driver cannot write. The docker-container
       # builder is the supported driver for that exporter.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and publish native runtime stack
         if: github.event_name == 'push' || inputs.native_host_memory
@@ -69,7 +69,7 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "$TALOS_VERSION" = v1.14.1 || { echo 'native runtime supports Talos v1.14.1 only' >&2; exit 1; }
+          source host-memory/profile.sh
           if [ -n "$NATIVE_RUNTIME_RELEASE" ] || [ -n "$KATA_EXTENSION_IMAGE" ]; then
             echo 'local native build cannot be mixed with component overrides' >&2
             exit 1
@@ -78,9 +78,9 @@ jobs:
           sudo apt-get install -y skopeo
           # All OS-stack components share the existing public artifact repository;
           # no new package visibility, credential or repository grant is required.
-          kata="ghcr.io/sylphxai/talos-installer:runtime-kata-$SOURCE_SHA"
-          imager="ghcr.io/sylphxai/talos-installer:runtime-imager-$SOURCE_SHA"
-          kubelet="ghcr.io/sylphxai/talos-installer:v1.36.4-kubelet.$SOURCE_SHA"
+          kata="ghcr.io/sylphxai/talos-installer:runtime-kata-$TALOS_VERSION-$SOURCE_SHA"
+          imager="ghcr.io/sylphxai/talos-installer:runtime-imager-$TALOS_VERSION-$SOURCE_SHA"
+          kubelet="ghcr.io/sylphxai/talos-installer:v1.36.4-kubelet.$TALOS_VERSION.$SOURCE_SHA"
           OCI_DIR="$RUNNER_TEMP/native-kata" bash host-memory/build-oci.sh kata
           skopeo copy --authfile "$HOME/.docker/config.json" --all --preserve-digests "oci:$RUNNER_TEMP/native-kata" "docker://$kata"
           OCI_DIR="$RUNNER_TEMP/native-imager" bash host-memory/build-oci.sh imager
@@ -138,7 +138,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.ext.outputs.artifact_tag }}
           name: Talos ${{ steps.ext.outputs.artifact_tag }}
