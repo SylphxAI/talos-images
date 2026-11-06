@@ -2,7 +2,7 @@
 # Build native runtime binaries; never wrap or replace a runtime on a live host.
 ARG CONTAINERD_BASE=ghcr.io/siderolabs/containerd@sha256:6737d2f431ac5c181aef7aac44cbbb87ac9370b6d34e5298ed0a47f9be8bc854
 ARG KATA_BASE=ghcr.io/siderolabs/kata-containers@sha256:699b92efa132888bd286e29c096bbe412f73e5cdea07ce4c5c83b408a3000ad4
-FROM golang:1.26.3-alpine AS native
+FROM golang:1.26.8-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS native
 RUN apk add --no-cache bash curl git make patch gcc musl-dev pkgconf
 WORKDIR /source
 COPY host-memory/ /source/host-memory/
@@ -24,7 +24,7 @@ RUN test "${#SOURCE_REVISION}" = 40 \
 
 # Node-pressure eviction must respect the same product tier even when kubelet's
 # legacy pod-cgroup view reports zero guest usage. Keep its existing 1.36.4 ABI.
-FROM golang:1.26.3-alpine AS native-kubelet
+FROM golang:1.26.8-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS native-kubelet
 RUN apk add --no-cache bash curl git patch
 WORKDIR /source
 COPY host-memory/ /source/host-memory/

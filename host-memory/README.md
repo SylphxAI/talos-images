@@ -30,7 +30,8 @@ The FR port was read against the tagged primary sources on 2026-11-06:
 [containerd 2.3.6](https://github.com/containerd/containerd/tree/v2.3.6) and
 [the 1.14.2 factory catalog](https://factory.talos.dev/version/v1.14.2/extensions/official).
 Every touched containerd source file is identical to 2.3.5; upstream `go.mod`
-has a separate 2.3.6 pin. Both strict patches, including Talos image verification,
+has a separate 2.3.6 pin and requires Go 1.26.8. Both CI and the digest-pinned
+compiler image use that toolchain. Both strict patches, including Talos image verification,
 are retained and CI compiles the corrected executables for each profile. Guest
 assets remain those of the release-matched factory extension.
 
