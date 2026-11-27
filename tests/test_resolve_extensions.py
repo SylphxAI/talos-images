@@ -23,7 +23,8 @@ class ResolveExtensionsTest(unittest.TestCase):
             env = dict(os.environ, PATH=f"{path}:{os.environ['PATH']}",
                        TALOS_VERSION="v1.14.1", STARGZ_ENABLED=stargz,
                        KATA_EXTENSION_IMAGE=override, GITHUB_OUTPUT=str(path / "output"),
-                       CATALOG_FIXTURE=str(path / "catalog.json"), CALLS=str(path / "calls"))
+                       CATALOG_FIXTURE=str(path / "catalog.json"), CALLS=str(path / "calls"),
+                       UKI_NESTED_KVM="false", NATIVE_HOST_MEMORY="false")
             env["NATIVE_RUNTIME_RELEASE"] = json.dumps(native) if native is not None else ""
             env.update(settings)
             result = subprocess.run(["bash", "scripts/resolve-extensions.sh"], cwd=ROOT,
@@ -94,26 +95,46 @@ class ResolveExtensionsTest(unittest.TestCase):
         self.assertEqual(output["artifact_tag"], "v1.14.1-host-memory-" + release["source_revision"] + "-stargz")
         self.assertIn("/version/v1.14.1/extensions/official", calls)
 
-    def test_nested_uki_is_a_pinned_non_latest_native_variant(self):
-        result, output, calls = self.resolve(UKI_NESTED_KVM="true", GITHUB_RUN_ID="100", GITHUB_RUN_ATTEMPT="2")
+    def stock_nested(self, **changes):
+        settings = {"UKI_NESTED_KVM": "true", "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "2",
+                    "STOCK_NESTED_KATA_REF": "ghcr.io/sylphxai/talos-installer@sha256:" + "c" * 64}
+        settings.update(changes)
+        return self.resolve(**settings)
+
+    def test_nested_uki_is_stock_kata_only_and_run_qualified(self):
+        result, output, calls = self.stock_nested()
         self.assertEqual(result.returncode, 0, result.stderr)
-        manifest = json.loads((ROOT / "profiles/v1.14.1-d34956ba-native-runtime.json").read_text())
-        self.assertEqual(json.loads(output["native_manifest"]), manifest)
-        self.assertEqual(output["imager_ref"], manifest["imager"])
-        self.assertEqual(output["ref"], manifest["kata_extension"])
-        self.assertEqual(output["kubelet_ref"], manifest["kubelet"])
-        stargz = "ghcr.io/siderolabs/stargz-snapshotter:v0.18.2@sha256:b5ed92e4620173c6c5f8b883bf8bcee2dd828e15918b6f166382abac409f8c63"
-        self.assertEqual(output["flags"].split(), ["--system-extension-image", manifest["kata_extension"],
-                                                  "--system-extension-image", stargz, "--extra-kernel-arg", "kvm_amd.nested=1"])
+        imager = "ghcr.io/siderolabs/imager@sha256:bb74a5c4fc190997cca0930004978203f1e2e2cd637f4db1f26ef3b2eaef8338"
+        installer = "ghcr.io/siderolabs/installer-base@sha256:816b11f0bc34b7bf7b34e4fe5b3764c3056d7f66f8098559f8ca750b37d0948d"
+        kata = "ghcr.io/sylphxai/talos-installer@sha256:" + "c" * 64
+        self.assertEqual(output["imager_ref"], imager)
+        self.assertEqual(output["ref"], kata)
+        self.assertEqual(output["flags"].split(), ["--system-extension-image", kata, "--base-installer-image", installer,
+                                                  "--extra-kernel-arg", "kvm_amd.nested=1"])
+        self.assertEqual(output["stargz_ref"], "")
+        self.assertEqual(output["kubelet_ref"], "")
+        self.assertNotIn("native_manifest", output)
         self.assertEqual(output["make_latest"], "false")
-        self.assertEqual(output["artifact_tag"], f"v1.14.1-host-memory-{manifest['source_revision']}-stargz-uki-nested-kvm-100-2")
+        self.assertEqual(output["artifact_tag"], "v1.14.1-stock-uki-nested-kvm-100-2")
         self.assertEqual(calls, "")
+        self.assertEqual(self.stock_nested(GITHUB_RUN_ATTEMPT="3")[1]["artifact_tag"],
+                         "v1.14.1-stock-uki-nested-kvm-100-3")
+
+    def test_nested_uki_requires_an_internal_digest_and_run_identity(self):
+        for changes in ({"STOCK_NESTED_KATA_REF": ""}, {"STOCK_NESTED_KATA_REF": "sylphxai/kata:latest"},
+                        {"STOCK_NESTED_KATA_REF": "ghcr.io/other/kata@sha256:" + "a" * 64},
+                        {"GITHUB_RUN_ID": ""}, {"GITHUB_RUN_ATTEMPT": "-1"}):
+            with self.subTest(changes=changes):
+                result, output, calls = self.stock_nested(**changes)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, {})
+                self.assertEqual(calls, "")
 
     def test_nested_uki_rejects_other_stacks_before_publication(self):
         for field, value in {"TALOS_VERSION": "v1.14.2", "NATIVE_HOST_MEMORY": "true", "STARGZ_ENABLED": "true",
                              "KATA_EXTENSION_IMAGE": KATA, "NATIVE_RUNTIME_RELEASE": "{}"}.items():
             with self.subTest(field=field):
-                result, output, calls = self.resolve(UKI_NESTED_KVM="true", **{field: value})
+                result, output, calls = self.stock_nested(**{field: value})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("requires Talos v1.14.1", result.stderr)
                 self.assertEqual(output, {})

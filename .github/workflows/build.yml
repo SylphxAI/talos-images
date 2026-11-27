@@ -27,7 +27,7 @@ on:
         default: false
         required: false
       uki_nested_kvm:
-        description: "Build the pinned v1.14.1 native + stargz UKI with kvm_amd.nested=1 (main only, separate release)"
+        description: "Build the pinned stock v1.14.1 + Kata 3.32.0 nested-KVM UKI (main only, separate release)"
         type: boolean
         default: false
         required: false
@@ -37,6 +37,7 @@ env:
   KATA_EXTENSION_IMAGE: ${{ inputs.kata_extension_image || '' }}
   STARGZ_ENABLED: ${{ inputs.stargz && 'true' || 'false' }}
   NATIVE_RUNTIME_RELEASE: ${{ inputs.native_runtime_release || '' }}
+  NATIVE_HOST_MEMORY: ${{ inputs.native_host_memory && 'true' || 'false' }}
   UKI_NESTED_KVM: ${{ inputs.uki_nested_kvm && 'true' || 'false' }}
 
 jobs:
@@ -108,10 +109,15 @@ jobs:
           printf 'NATIVE_RUNTIME_RELEASE=%s\n' "$release" >> "$GITHUB_ENV"
           printf '%s\n' "$release"
 
+      - name: Build and verify stock nested Kata extension
+        if: inputs.uki_nested_kvm
+        id: stock-kata
+        run: bash scripts/build-stock-nested-kata.sh
+
       - name: Resolve extensions
         id: ext
         env:
-          NATIVE_HOST_MEMORY: ${{ inputs.native_host_memory && 'true' || 'false' }}
+          STOCK_NESTED_KATA_REF: ${{ steps.stock-kata.outputs.kata_ref }}
         run: bash scripts/resolve-extensions.sh
 
       # Metal image needs loopback device support — use --privileged
@@ -146,10 +152,12 @@ jobs:
 
       - name: Verify metal and installer UKIs before publication
         if: inputs.uki_nested_kvm
+        env:
+          GUEST_ELF_SHA256: ${{ steps.stock-kata.outputs.guest_elf_sha256 }}
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mtools
+          sudo apt-get install -y --no-install-recommends mtools python3-yaml squashfs-tools
           scratch=$(mktemp -d)
           trap 'rm -rf "$scratch"' EXIT
           zstd -d /tmp/talos-out/metal-amd64.raw.zst -o "$scratch/metal.raw"
@@ -157,13 +165,15 @@ jobs:
           [[ "$esp" =~ ^[0-9]+$ ]]
           mcopy -i "$scratch/metal.raw@@$((esp * 512))" "::/EFI/Linux/Talos-$TALOS_VERSION.efi" "$scratch/metal.efi"
           crane export - - < /tmp/talos-installer/installer-amd64.tar | tar -xOf - usr/install/amd64/vmlinuz.efi > "$scratch/installer.efi"
-          python3 scripts/verify-nested-uki.py "$scratch/metal.efi" "$scratch/installer.efi" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            cat "$RUNNER_TEMP/stock-nested-guest-elf.txt"
+            /usr/bin/python3 scripts/verify-stock-nested-uki.py "$scratch/metal.efi" "$scratch/installer.efi" "$GUEST_ELF_SHA256"
+          } | tee /tmp/talos-out/stock-nested-verification.txt | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Push installer to GHCR
         id: installer
         env:
           ARTIFACT_TAG: ${{ steps.ext.outputs.artifact_tag }}
-          PINNED_NATIVE_MANIFEST: ${{ steps.ext.outputs.native_manifest }}
         run: |
           set -euo pipefail
           target="ghcr.io/sylphxai/talos-installer:$ARTIFACT_TAG"
@@ -172,11 +182,34 @@ jobs:
           test "$(cat "$RUNNER_TEMP/installer-ref")" = "${target%:*}@$digest"
           printf 'Installer: %s@%s\n' "${target%:*}" "$digest" | tee -a "$GITHUB_STEP_SUMMARY"
           printf 'ref=%s@%s\n' "${target%:*}" "$digest" >> "$GITHUB_OUTPUT"
-          NATIVE_RUNTIME_RELEASE="${PINNED_NATIVE_MANIFEST:-$NATIVE_RUNTIME_RELEASE}"
           if [ -n "$NATIVE_RUNTIME_RELEASE" ]; then
             python3 scripts/runtime-release.py --installer "${target%:*}@$digest" > /tmp/talos-out/native-runtime-release.json
             printf 'release_asset=%s\n' /tmp/talos-out/native-runtime-release.json >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Write stock nested release receipt
+        if: inputs.uki_nested_kvm
+        id: stock-receipt
+        env:
+          ARTIFACT_TAG: ${{ steps.ext.outputs.artifact_tag }}
+          IMAGER: ${{ steps.ext.outputs.imager_ref }}
+          KATA: ${{ steps.stock-kata.outputs.kata_ref }}
+          INSTALLER: ${{ steps.installer.outputs.ref }}
+          GUEST_ELF_SHA256: ${{ steps.stock-kata.outputs.guest_elf_sha256 }}
+        run: |
+          set -euo pipefail
+          source scripts/stock-nested-profile.sh
+          cd /tmp/talos-out
+          jq -n --arg tag "$ARTIFACT_TAG" --arg version "$TALOS_VERSION" --arg source "$GITHUB_SHA" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            --arg imager "$IMAGER" --arg base "$STOCK_NESTED_INSTALLER_BASE" --arg installer "$INSTALLER" \
+            --arg kata "$KATA" --arg kata_base "$STOCK_NESTED_KATA_BASE" --arg elf "$GUEST_ELF_SHA256" \
+            --arg metal "$(sha256sum metal-amd64.raw.zst | cut -d' ' -f1)" \
+            '{schema_version:1,artifact_tag:$tag,talos_version:$version,source_revision:$source,build_run:$run,
+              imager:$imager,installer_base:$base,installer:$installer,kata_base:$kata_base,kata_extension:$kata,
+              guest_elf_sha256:$elf,metal_sha256:$metal,kernel_arg:"kvm_amd.nested=1"}' > stock-nested-release.json
+          cat stock-nested-release.json
+          printf 'receipt=%s\nproof=%s\n' "$PWD/stock-nested-release.json" "$PWD/stock-nested-verification.txt" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -191,11 +224,13 @@ jobs:
             - Native kubelet (empty for stock builds): `${{ steps.ext.outputs.kubelet_ref }}`
             - stargz (empty when disabled): `${{ steps.ext.outputs.stargz_ref }}`
 
-            Build receipt: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Build receipt: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
 
             **Install**: Download `metal-amd64.raw.zst` below
             **Upgrade**: `${{ steps.installer.outputs.ref }}`
           files: |
             /tmp/talos-out/metal-amd64.raw.zst
             ${{ steps.installer.outputs.release_asset }}
+            ${{ steps.stock-receipt.outputs.receipt }}
+            ${{ steps.stock-receipt.outputs.proof }}
           make_latest: ${{ steps.ext.outputs.make_latest }}
