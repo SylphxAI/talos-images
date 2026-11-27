@@ -56,9 +56,23 @@ ARG SOURCE_REVISION
 LABEL org.opencontainers.image.revision=${SOURCE_REVISION}
 LABEL org.opencontainers.image.source=https://github.com/SylphxAI/talos-images
 
-# All guest/VMM assets come from the selected Talos factory's exact Kata3.32.0
-# extension. Only the native shim and its explicit release identity change.
+# Build the x86_64 guest kernel with the same pinned recipe used by build leases.
+FROM debian:bookworm-slim@sha256:311f7a192fd9a92b165a86b32fa3aae9005b11849bfb1db2d4fd784559ee464f AS guest-kernel
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bc bison build-essential ca-certificates curl ed flex libelf-dev libssl-dev \
+    m4 patch pkg-config xz-utils zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /source
+COPY guest-kernel/ /source/guest-kernel/
+RUN bash guest-kernel/build-kernel.sh setup \
+ && bash guest-kernel/build-kernel.sh build \
+ && bash guest-kernel/build-kernel.sh verify \
+ && archive=$(bash guest-kernel/build-kernel.sh package) \
+ && tar -xOf "$archive" vmlinux > /vmlinux.container
+
+# Retain the factory's release-matched VMM, guest image and configuration.
 FROM ${KATA_BASE} AS kata-extension
+COPY --from=guest-kernel --chmod=0644 /vmlinux.container /rootfs/usr/local/share/kata-containers/vmlinux.container
 COPY --from=native /source/kata-containers-3.32.0/src/runtime/containerd-shim-kata-v2 /rootfs/usr/local/bin/containerd-shim-kata-v2
 COPY --from=native /out/source-revision /rootfs/usr/local/share/kata-containers/host-memory-source-revision
 ARG SOURCE_REVISION

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Build the Kata guest kernel with the traffic-control options a build lease
-# needs, and check the result into the vmlinux it produced.
+# Build and verify the Kata guest kernel with traffic control and nested KVM.
 #
 # The recipe is Kata's own (tools/packaging/kernel/build-kernel.sh at the
 # release named by KATA_VERSION): the same kernel version, the same fragment
-# merge, the same `make oldconfig`, the same `make`. The only addition is
-# guest-kernel/qos.conf, merged in last so it wins over the stock fragments.
+# merge, the same `make oldconfig`, the same `make`. The local qos.conf and
+# nested-kvm.conf fragments are merged last so they override stock defaults.
 #
 # Everything is pinned. The Kata source archive and the kernel tarball are
 # checked against recorded sha256 sums, and the script refuses to run unless
@@ -15,7 +14,7 @@
 #
 #   guest-kernel/build-kernel.sh setup    download, merge config, oldconfig
 #   guest-kernel/build-kernel.sh build    compile vmlinux
-#   guest-kernel/build-kernel.sh verify   the four options are =y in .config
+#   guest-kernel/build-kernel.sh verify   check .config and vmlinux initcalls
 #   guest-kernel/build-kernel.sh package  vmlinux plus its config, as a tar
 set -euo pipefail
 
@@ -98,10 +97,10 @@ toolchain() {
   # objtool includes <gelf.h>. The lease has libelf but not its headers, and
   # no root, so the headers come from a vendored elfutils. elfutils needs
   # zlib's headers, which the image also lacks.
-  if [ ! -f "$work/tools/include/zlib.h" ]; then
+  if [ ! -f "$work/tools/include/zlib.h" ] && ! pkg-config --exists zlib 2>/dev/null; then
     build_tool zlib zlib-1.3.1.tar.gz 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
   fi
-  if [ ! -f "$work/tools/include/libelf.h" ]; then
+  if [ ! -f "$work/tools/include/libelf.h" ] && ! pkg-config --exists libelf 2>/dev/null; then
     export CPPFLAGS="-I$work/tools/include ${CPPFLAGS:-}" LDFLAGS="-L$work/tools/lib ${LDFLAGS:-}"
     build_tool elfutils elfutils_0.196.orig.tar.bz2 fd5cc6b77ad6773cac93cb3f415f9318ac3b3455eecf801f6b4a742c4f6c7209
   fi
@@ -164,67 +163,73 @@ setup() {
   fetch "https://cdn.kernel.org/pub/linux/kernel/v$major.x/linux-$KERNEL_VERSION.tar.xz" \
     "$src/linux-$KERNEL_VERSION.tar.xz" "$KERNEL_SHA256"
 
-  if [ ! -d "$(kernel_tree)" ]; then
-    tar -xJf "$src/linux-$KERNEL_VERSION.tar.xz" -C "$src"
-    mv "$src/linux-$KERNEL_VERSION" "$(kernel_tree)"
-  fi
+  # Kata's forced setup extracts the archive again. Give it the verified
+  # checksum so it can use the local archive without a second network lookup.
+  printf '%s  %s\n' "$KERNEL_SHA256" "linux-$KERNEL_VERSION.tar.xz" > "$src/linux-$KERNEL_VERSION.tar.xz.sha256"
 
   builder=$kata/tools/packaging/kernel/build-kernel.sh
   local tree
   tree=$(kernel_tree)
-  # Kata's setup returns immediately when the tree already exists, which
-  # skips the fragment merge. Drop the marker it checks so it regenerates
-  # .config.generated. The sources stay; only the generated config is redone.
-  rm -rf "$tree/.config.generated"
+  # Force a fresh tree so Kata reapplies its patches and stock fragments.
   ( cd "$src" && bash "$builder" -f -v "$KERNEL_VERSION" -k "$tree" setup )
   [ -f "$tree/.config.generated" ] || { echo "kata setup produced no config" >&2; exit 1; }
 
   cd "$tree"
-  # -r: the last file wins, so our fragment overrides the stock "is not set".
-  KCONFIG_CONFIG=.config scripts/kconfig/merge_config.sh -r -n .config.generated "$root/guest-kernel/qos.conf" >"$work/merge.log" 2>&1 || {
+  # The local fragments override the stock "is not set" entries.
+  KCONFIG_CONFIG=.config scripts/kconfig/merge_config.sh -r -n .config.generated \
+    "$root/guest-kernel/qos.conf" "$root/guest-kernel/nested-kvm.conf" >"$work/merge.log" 2>&1 || {
     echo "config merge failed:" >&2; tail -20 "$work/merge.log" >&2; exit 1; }
   make olddefconfig
-  verify
+  verify_config
 }
 
-verify() {
+verify_config() {
   local tree config missing=0 option
   tree=$(kernel_tree)
   config=$tree/.config
   [ -f "$config" ] || { echo "no $config; run setup first" >&2; exit 1; }
   for option in CONFIG_NET_SCH_PRIO CONFIG_NET_SCH_HTB CONFIG_NET_SCH_NETEM \
-                CONFIG_NET_CLS_ACT CONFIG_NET_ACT_GACT CONFIG_NET_CLS_FLOWER; do
+                CONFIG_NET_CLS_ACT CONFIG_NET_ACT_GACT CONFIG_NET_CLS_FLOWER \
+                CONFIG_VIRTUALIZATION CONFIG_KVM CONFIG_KVM_X86 CONFIG_KVM_AMD \
+                CONFIG_KVM_INTEL CONFIG_VHOST_MENU CONFIG_VHOST CONFIG_VHOST_NET \
+                CONFIG_TUN CONFIG_HIGH_RES_TIMERS CONFIG_PREEMPT_NOTIFIERS; do
     if ! grep -qx "$option=y" "$config"; then
       echo "not built in: $option" >&2
       missing=1
     fi
   done
+  if ! grep -qx '# CONFIG_MODULES is not set' "$config"; then
+    echo "guest kernel must be built without module support" >&2
+    missing=1
+  fi
   [ "$missing" = 0 ]
-  echo "guest kernel config has prio, htb, netem and flower built in"
+  echo "guest kernel config has QoS, KVM (AMD and Intel) and vhost-net built in"
 }
 
 symbols() {
-  local tree vmlinux missing=0 name
-  tree=$(kernel_tree)
-  vmlinux=$tree/vmlinux
+  local vmlinux=${1:-$(kernel_tree)/vmlinux} entry module init names missing=0
   [ -f "$vmlinux" ] || { echo "no vmlinux; run build first" >&2; exit 1; }
-  # Built-in qdiscs are not exported. Each one leaves an initcall named
-  # after its module init, which is what registers it with the scheduler.
-  for name in sch_prio sch_htb sch_netem cls_flower; do
-    if ! nm "$vmlinux" | grep -q "__initcall__kmod_${name}__"; then
-      echo "vmlinux does not register $name" >&2
+  # Linux 6.18 names built-in device initcalls after their module and entry
+  # point. The counter and source line vary; Intel's vt_init calls vmx_init.
+  names=$(nm --defined-only --format=posix "$vmlinux" | awk '$1 ~ /^__initcall__/ {print $1}')
+  for entry in sch_prio:prio_module_init sch_htb:htb_module_init \
+               sch_netem:netem_module_init cls_flower:cls_fl_init \
+               kvm:kvm_x86_init kvm_amd:svm_init kvm_intel:vt_init vhost_net:vhost_net_init; do
+    module=${entry%:*}
+    init=${entry#*:}
+    if ! grep -Ex "__initcall__kmod_${module}__[0-9]+_[0-9]+_${init}6" <<< "$names"; then
+      echo "vmlinux does not register $module ($init)" >&2
       missing=1
     fi
   done
   [ "$missing" = 0 ]
-  echo "vmlinux registers prio, htb, netem and flower"
 }
 
 build() {
   local tree jobs
   tree=$(kernel_tree)
   [ -f "$tree/.config" ] || { echo "no config; run setup first" >&2; exit 1; }
-  verify
+  verify_config
   toolchain
   jobs=${JOBS:-$(nproc)}
   # The vendored tools and libelf headers live in the workspace, not the image.
@@ -245,9 +250,9 @@ package() {
 
 case ${1:-} in
   setup) setup ;;
-  verify) verify ;;
+  verify) verify_config; symbols ;;
   build) build ;;
-  symbols) symbols ;;
+  symbols) symbols "${2:-}" ;;
   package) package ;;
-  *) echo "usage: $0 setup|verify|build|symbols|package" >&2; exit 2 ;;
+  *) echo "usage: $0 setup|build|verify|symbols [vmlinux]|package" >&2; exit 2 ;;
 esac

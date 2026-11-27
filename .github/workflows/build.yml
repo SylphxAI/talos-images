@@ -35,6 +35,7 @@ env:
 
 jobs:
   build:
+    if: github.event.repository.visibility == 'public'
     # GitHub's free standard hosted runner (a public repository, owner#750):
     # the imager needs a privileged Docker with loop devices, which our Kata
     # runners do not give (modprobe loop fails, 2026-09-27).
@@ -88,9 +89,16 @@ jobs:
           OCI_DIR="$RUNNER_TEMP/native-kubelet" bash host-memory/build-oci.sh kubelet
           skopeo copy --authfile "$HOME/.docker/config.json" --all --preserve-digests "oci:$RUNNER_TEMP/native-kubelet" "docker://$kubelet"
           kata_digest=$(crane digest "$kata")
+          kata_ref="${kata%:*}@$kata_digest"
+          kernel="$RUNNER_TEMP/vmlinux.container"
+          crane export --platform linux/amd64 "$kata_ref" - | \
+            tar -xOf - rootfs/usr/local/share/kata-containers/vmlinux.container > "$kernel"
+          bash guest-kernel/build-kernel.sh symbols "$kernel"
+          kernel_sha=$(sha256sum "$kernel" | cut -d' ' -f1)
+          printf 'Kata extension: %s\n\nGuest kernel SHA-256: %s\n' "$kata_ref" "$kernel_sha" >> "$GITHUB_STEP_SUMMARY"
           imager_digest=$(crane digest "$imager")
           kubelet_digest=$(crane digest "$kubelet")
-          release=$(jq -cn --arg version "$TALOS_VERSION" --arg source "$SOURCE_SHA" --arg imager "${imager%:*}@$imager_digest" --arg kata "${kata%:*}@$kata_digest" --arg kubelet "$kubelet@$kubelet_digest" '{schema_version:1,talos_version:$version,source_revision:$source,imager:$imager,kata_extension:$kata,kubelet:$kubelet,kubelet_version:"v1.36.4"}')
+          release=$(jq -cn --arg version "$TALOS_VERSION" --arg source "$SOURCE_SHA" --arg imager "${imager%:*}@$imager_digest" --arg kata "$kata_ref" --arg kubelet "$kubelet@$kubelet_digest" '{schema_version:1,talos_version:$version,source_revision:$source,imager:$imager,kata_extension:$kata,kubelet:$kubelet,kubelet_version:"v1.36.4"}')
           printf 'NATIVE_RUNTIME_RELEASE=%s\n' "$release" >> "$GITHUB_ENV"
           printf '%s\n' "$release"
 
