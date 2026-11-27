@@ -140,6 +140,13 @@ class ResolveExtensionsTest(unittest.TestCase):
                 self.assertEqual(output, {})
                 self.assertEqual(calls, "")
 
+    def test_v2_native_receipt_reuses_pinned_artifacts(self):
+        release = {**self.native_release(), "schema_version": 2}
+        result, output, _ = self.resolve(native=release)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output["imager_ref"], release["imager"])
+        self.assertEqual(output["kubelet_ref"], release["kubelet"])
+
     def test_refuses_mixed_kata_override_before_publication(self):
         result, output, _ = self.resolve(override="custom/kata:other", native=self.native_release())
         self.assertNotEqual(result.returncode, 0)
@@ -152,7 +159,7 @@ class ResolveExtensionsTest(unittest.TestCase):
             value = self.native_release()
             del value[field]
             invalid.append(value)
-        for field, entry in [("schema_version", True), ("talos_version", "v1.14.2"),
+        for field, entry in [("schema_version", True), ("schema_version", 3), ("talos_version", "v1.14.2"),
                              ("source_revision", "short"), ("imager", "ghcr.io/sylphxai/imager:latest"),
                              ("kata_extension", "ghcr.io/sylphxai/kata@sha256:bad"),
                              ("kubelet_version", "v1.37.1"),

@@ -105,7 +105,7 @@ jobs:
           printf 'Kata extension: %s\n\nGuest kernel SHA-256: %s\n' "$kata_ref" "$kernel_sha" >> "$GITHUB_STEP_SUMMARY"
           imager_digest=$(crane digest "$imager")
           kubelet_digest=$(crane digest "$kubelet")
-          release=$(jq -cn --arg version "$TALOS_VERSION" --arg source "$SOURCE_SHA" --arg imager "${imager%:*}@$imager_digest" --arg kata "$kata_ref" --arg kubelet "$kubelet@$kubelet_digest" '{schema_version:1,talos_version:$version,source_revision:$source,imager:$imager,kata_extension:$kata,kubelet:$kubelet,kubelet_version:"v1.36.4"}')
+          release=$(jq -cn --arg version "$TALOS_VERSION" --arg source "$SOURCE_SHA" --arg imager "${imager%:*}@$imager_digest" --arg kata "$kata_ref" --arg kubelet "$kubelet@$kubelet_digest" '{schema_version:2,talos_version:$version,source_revision:$source,imager:$imager,kata_extension:$kata,kubelet:$kubelet,kubelet_version:"v1.36.4"}')
           printf 'NATIVE_RUNTIME_RELEASE=%s\n' "$release" >> "$GITHUB_ENV"
           printf '%s\n' "$release"
 

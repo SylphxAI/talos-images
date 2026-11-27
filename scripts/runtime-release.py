@@ -14,7 +14,7 @@ def validate(value, talos_version):
     expected = {"schema_version", "talos_version", "source_revision", "imager", "kata_extension", "kubelet", "kubelet_version"}
     if not isinstance(value, dict) or not expected.issubset(value) or set(value) - expected - {"installer"}:
         raise ValueError("native runtime release requires the complete imager, Kata and kubelet stack with source and ABI identities")
-    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+    if type(value["schema_version"]) is not int or value["schema_version"] not in (1, 2):
         raise ValueError("unsupported native runtime release schema")
     if value["talos_version"] != talos_version or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", talos_version):
         raise ValueError("native runtime release must match the selected Talos version")
