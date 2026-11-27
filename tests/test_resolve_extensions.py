@@ -11,7 +11,7 @@ STARGZ = "ghcr.io/siderolabs/stargz-snapshotter:release@sha256:stargz"
 
 
 class ResolveExtensionsTest(unittest.TestCase):
-    def resolve(self, stargz="false", override="", missing_stargz=False, native=None):
+    def resolve(self, stargz="false", override="", missing_stargz=False, native=None, **settings):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             catalog = [{"name": "siderolabs/kata-containers", "ref": KATA.split("@")[0], "digest": KATA.split("@")[1]}]
@@ -25,6 +25,7 @@ class ResolveExtensionsTest(unittest.TestCase):
                        KATA_EXTENSION_IMAGE=override, GITHUB_OUTPUT=str(path / "output"),
                        CATALOG_FIXTURE=str(path / "catalog.json"), CALLS=str(path / "calls"))
             env["NATIVE_RUNTIME_RELEASE"] = json.dumps(native) if native is not None else ""
+            env.update(settings)
             result = subprocess.run(["bash", "scripts/resolve-extensions.sh"], cwd=ROOT,
                                     env=env, text=True, capture_output=True)
             output = dict(line.split("=", 1) for line in (path / "output").read_text().splitlines()) if (path / "output").exists() else {}
@@ -92,6 +93,31 @@ class ResolveExtensionsTest(unittest.TestCase):
         self.assertEqual(output["flags"].split(), ["--system-extension-image", release["kata_extension"], "--system-extension-image", STARGZ])
         self.assertEqual(output["artifact_tag"], "v1.14.1-host-memory-" + release["source_revision"] + "-stargz")
         self.assertIn("/version/v1.14.1/extensions/official", calls)
+
+    def test_nested_uki_is_a_pinned_non_latest_native_variant(self):
+        result, output, calls = self.resolve(UKI_NESTED_KVM="true", GITHUB_RUN_ID="100", GITHUB_RUN_ATTEMPT="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((ROOT / "profiles/v1.14.1-d34956ba-native-runtime.json").read_text())
+        self.assertEqual(json.loads(output["native_manifest"]), manifest)
+        self.assertEqual(output["imager_ref"], manifest["imager"])
+        self.assertEqual(output["ref"], manifest["kata_extension"])
+        self.assertEqual(output["kubelet_ref"], manifest["kubelet"])
+        stargz = "ghcr.io/siderolabs/stargz-snapshotter:v0.18.2@sha256:b5ed92e4620173c6c5f8b883bf8bcee2dd828e15918b6f166382abac409f8c63"
+        self.assertEqual(output["flags"].split(), ["--system-extension-image", manifest["kata_extension"],
+                                                  "--system-extension-image", stargz, "--extra-kernel-arg", "kvm_amd.nested=1"])
+        self.assertEqual(output["make_latest"], "false")
+        self.assertEqual(output["artifact_tag"], f"v1.14.1-host-memory-{manifest['source_revision']}-stargz-uki-nested-kvm-100-2")
+        self.assertEqual(calls, "")
+
+    def test_nested_uki_rejects_other_stacks_before_publication(self):
+        for field, value in {"TALOS_VERSION": "v1.14.2", "NATIVE_HOST_MEMORY": "true", "STARGZ_ENABLED": "true",
+                             "KATA_EXTENSION_IMAGE": KATA, "NATIVE_RUNTIME_RELEASE": "{}"}.items():
+            with self.subTest(field=field):
+                result, output, calls = self.resolve(UKI_NESTED_KVM="true", **{field: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("requires Talos v1.14.1", result.stderr)
+                self.assertEqual(output, {})
+                self.assertEqual(calls, "")
 
     def test_refuses_mixed_kata_override_before_publication(self):
         result, output, _ = self.resolve(override="custom/kata:other", native=self.native_release())

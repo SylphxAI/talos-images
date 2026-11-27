@@ -26,16 +26,22 @@ on:
         type: boolean
         default: false
         required: false
+      uki_nested_kvm:
+        description: "Build the pinned v1.14.1 native + stargz UKI with kvm_amd.nested=1 (main only, separate release)"
+        type: boolean
+        default: false
+        required: false
 
 env:
   TALOS_VERSION: ${{ inputs.talos_version || 'v1.14.1' }}
   KATA_EXTENSION_IMAGE: ${{ inputs.kata_extension_image || '' }}
   STARGZ_ENABLED: ${{ inputs.stargz && 'true' || 'false' }}
   NATIVE_RUNTIME_RELEASE: ${{ inputs.native_runtime_release || '' }}
+  UKI_NESTED_KVM: ${{ inputs.uki_nested_kvm && 'true' || 'false' }}
 
 jobs:
   build:
-    if: github.event.repository.visibility == 'public'
+    if: github.event.repository.visibility == 'public' && (!inputs.uki_nested_kvm || github.ref == 'refs/heads/main')
     # GitHub's free standard hosted runner (a public repository, owner#750):
     # the imager needs a privileged Docker with loop devices, which our Kata
     # runners do not give (modprobe loop fails, 2026-09-27).
@@ -65,7 +71,7 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and publish native runtime stack
-        if: github.event_name == 'push' || inputs.native_host_memory
+        if: github.event_name == 'push' || (inputs.native_host_memory && !inputs.uki_nested_kvm)
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
@@ -104,42 +110,69 @@ jobs:
 
       - name: Resolve extensions
         id: ext
+        env:
+          NATIVE_HOST_MEMORY: ${{ inputs.native_host_memory && 'true' || 'false' }}
         run: bash scripts/resolve-extensions.sh
 
       # Metal image needs loopback device support — use --privileged
       # and ensure /dev is properly mounted
       - name: Build metal image
+        env:
+          IMAGER: ${{ steps.ext.outputs.imager_ref }}
+          FLAGS: ${{ steps.ext.outputs.flags }}
         run: |
+          read -ra args <<< "$FLAGS"
           sudo modprobe loop
           mkdir -p /tmp/talos-out
           docker run --rm -t \
             -v /tmp/talos-out:/out \
             -v /dev:/dev \
             --privileged \
-            ${{ steps.ext.outputs.imager_ref }} metal \
-            ${{ steps.ext.outputs.flags }}
+            "$IMAGER" metal "${args[@]}"
           ls -lh /tmp/talos-out/
 
       - name: Build installer image
+        env:
+          IMAGER: ${{ steps.ext.outputs.imager_ref }}
+          FLAGS: ${{ steps.ext.outputs.flags }}
         run: |
+          read -ra args <<< "$FLAGS"
           mkdir -p /tmp/talos-installer
           docker run --rm -t \
             -v /tmp/talos-installer:/out \
             --privileged \
-            ${{ steps.ext.outputs.imager_ref }} installer \
-            ${{ steps.ext.outputs.flags }}
+            "$IMAGER" installer "${args[@]}"
           ls -lh /tmp/talos-installer/
+
+      - name: Verify metal and installer UKIs before publication
+        if: inputs.uki_nested_kvm
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mtools
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          zstd -d /tmp/talos-out/metal-amd64.raw.zst -o "$scratch/metal.raw"
+          esp=$(partx --raw --noheadings -o START,TYPE "$scratch/metal.raw" | awk '$2 == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {print $1}')
+          [[ "$esp" =~ ^[0-9]+$ ]]
+          mcopy -i "$scratch/metal.raw@@$((esp * 512))" "::/EFI/Linux/Talos-$TALOS_VERSION.efi" "$scratch/metal.efi"
+          crane export - - < /tmp/talos-installer/installer-amd64.tar | tar -xOf - usr/install/amd64/vmlinuz.efi > "$scratch/installer.efi"
+          python3 scripts/verify-nested-uki.py "$scratch/metal.efi" "$scratch/installer.efi" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Push installer to GHCR
         id: installer
         env:
           ARTIFACT_TAG: ${{ steps.ext.outputs.artifact_tag }}
+          PINNED_NATIVE_MANIFEST: ${{ steps.ext.outputs.native_manifest }}
         run: |
           set -euo pipefail
           target="ghcr.io/sylphxai/talos-installer:$ARTIFACT_TAG"
-          crane push /tmp/talos-installer/installer-amd64.tar "$target"
+          crane push --image-refs "$RUNNER_TEMP/installer-ref" /tmp/talos-installer/installer-amd64.tar "$target"
           digest=$(crane digest "$target")
+          test "$(cat "$RUNNER_TEMP/installer-ref")" = "${target%:*}@$digest"
+          printf 'Installer: %s@%s\n' "${target%:*}" "$digest" | tee -a "$GITHUB_STEP_SUMMARY"
           printf 'ref=%s@%s\n' "${target%:*}" "$digest" >> "$GITHUB_OUTPUT"
+          NATIVE_RUNTIME_RELEASE="${PINNED_NATIVE_MANIFEST:-$NATIVE_RUNTIME_RELEASE}"
           if [ -n "$NATIVE_RUNTIME_RELEASE" ]; then
             python3 scripts/runtime-release.py --installer "${target%:*}@$digest" > /tmp/talos-out/native-runtime-release.json
             printf 'release_asset=%s\n' /tmp/talos-out/native-runtime-release.json >> "$GITHUB_OUTPUT"
@@ -149,6 +182,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.ext.outputs.artifact_tag }}
+          target_commitish: ${{ inputs.uki_nested_kvm && github.sha || '' }}
           name: Talos ${{ steps.ext.outputs.artifact_tag }}
           body: |
             Custom Talos image with extensions:
@@ -156,6 +190,8 @@ jobs:
             - Core imager: `${{ steps.ext.outputs.imager_ref }}`
             - Native kubelet (empty for stock builds): `${{ steps.ext.outputs.kubelet_ref }}`
             - stargz (empty when disabled): `${{ steps.ext.outputs.stargz_ref }}`
+
+            Build receipt: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             **Install**: Download `metal-amd64.raw.zst` below
             **Upgrade**: `${{ steps.installer.outputs.ref }}`
