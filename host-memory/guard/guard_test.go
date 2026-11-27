@@ -1012,16 +1012,32 @@ func TestReleaseWaitsOutsideNodeLockAndKeepsResidueMeasured(t *testing.T) {
 	}
 }
 
+// Cancel only after Release reaches the populated cgroup wait, not while it
+// still needs to acquire the lock or commit its state on disk.
+func expectHeldRelease(t *testing.T, g *Guard, k *modelKernel, id, wantPath string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- g.Release(ctx, id) }()
+	select {
+	case path := <-k.waiting:
+		cancel()
+		err := <-done
+		if path != wantPath || !errors.Is(err, ErrHeld) {
+			t.Fatalf("release wait: got path %q, error %v; want path %q and ErrHeld", path, err, wantPath)
+		}
+	case err := <-done:
+		t.Fatalf("release completed without waiting for %q: %v", wantPath, err)
+	}
+}
+
 func TestHeldReleaseIsRetryableAndNonFatalOnRestart(t *testing.T) {
 	k := newModel()
 	g, c, _ := openFor(t, k)
 	protected := reserveFor(t, g, k, "p", Protected, 300, 300)
 	k.charge(protected, 100, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if err := g.Release(ctx, "p"); !errors.Is(err, ErrHeld) {
-		t.Fatalf("want ErrHeld, got %v", err)
-	}
+	expectHeldRelease(t, g, k, "p", protected)
 	if contract, _ := g.Contract("p"); contract.State != StateReleasing || k.number(aggregate+"/memory.max") != 700 {
 		t.Fatal("held release returned credit")
 	}
@@ -1213,11 +1229,7 @@ func TestBestEffortReleaseRemovesUnpopulatedDescendantsWithResidue(t *testing.T)
 	be := reserveFor(t, g, k, "be", BestEffort, 600, 100)
 	k.create(be + "/shim")
 	k.charge(be+"/shim", 30, true)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if err := g.Release(ctx, "be"); !errors.Is(err, ErrHeld) {
-		t.Fatalf("populated runtime descendant released: %v", err)
-	}
+	expectHeldRelease(t, g, k, "be", be)
 	k.charge(be+"/shim", 30, false)
 	if err := g.Release(context.Background(), "be"); err != nil {
 		t.Fatal(err)
