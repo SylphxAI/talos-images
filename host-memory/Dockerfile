@@ -70,9 +70,12 @@ RUN bash guest-kernel/build-kernel.sh setup \
  && archive=$(bash guest-kernel/build-kernel.sh package) \
  && tar -xOf "$archive" vmlinux > /vmlinux.container
 
-# Retain the factory's release-matched VMM, guest image and configuration.
-FROM ${KATA_BASE} AS kata-extension
+# Shared by stock and native builds; keep the base intact except for the verified ELF.
+FROM ${KATA_BASE} AS kata-with-guest-kernel
 COPY --from=guest-kernel --chmod=0644 /vmlinux.container /rootfs/usr/local/share/kata-containers/vmlinux.container
+
+# Only the native build adds patched userspace.
+FROM kata-with-guest-kernel AS kata-extension
 COPY --from=native /source/kata-containers-3.32.0/src/runtime/containerd-shim-kata-v2 /rootfs/usr/local/bin/containerd-shim-kata-v2
 COPY --from=native /out/source-revision /rootfs/usr/local/share/kata-containers/host-memory-source-revision
 ARG SOURCE_REVISION

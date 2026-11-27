@@ -60,22 +60,31 @@ Node configuration and rollout remain the responsibility of downstream
 infrastructure consumers; selecting this image alone does not enable lazy
 pulling for workloads.
 
-## Pinned native + stargz nested-KVM UKI
+## Stock nested-KVM UKI (amd64)
 
-To build the opt-in Talos v1.14.1 UKI with `kvm_amd.nested=1`:
+To build the opt-in Talos v1.14.1 image with `kvm_amd.nested=1`:
 
 ```bash
 gh workflow run build.yml -R SylphxAI/talos-images --ref main -f uki_nested_kvm=true
 ```
 
-This mode accepts no stack overrides. It uses the exact native manifest and
-stargz v0.18.2 digest from [build 46009885306](https://github.com/SylphxAI/talos-images/actions/runs/46009885306).
-The default and reset-maintenance command lines in both emitted UKIs must each
-contain the setting once, and both initrds must include stargz. The UKIs remain
-unsigned like the baseline; this is not a Secure Boot signing or boot test.
-Each attempt publishes a separate non-latest release with a run receipt and
-`native-runtime-release.json`. Use its installer digest, not the tag, to pin a
-consumer. This workflow does not modify any cluster.
+This dispatch rejects alternate versions, Kata overrides, native runtime inputs,
+and stargz. It uses the pinned upstream Talos imager and installer base. Its only
+system extension is upstream Kata 3.32.0 with `vmlinux.container` replaced by the
+shared, verified guest ELF; the Kata shim, VMM, guest rootfs and configuration
+are stock. Both emitted UKIs must contain the exact AMD argument once in each
+of their default and reset-maintenance command lines, and both embedded Kata
+kernels must match the published extension's ELF digest.
+
+The run publishes a non-latest release and GHCR installer under
+`v1.14.1-stock-uki-nested-kvm-<run-id>-<run-attempt>`. Download
+`stock-nested-release.json` from that exact release for the installer digest,
+input pins, metal SHA-256, guest ELF SHA-256, source revision and run attempt.
+`stock-nested-verification.txt` records the ELF header and initcalls read back
+from GHCR and the command line and embedded ELF checks from both UKIs.
+Pin the installer by digest rather than by tag. Earlier releases are not
+changed. These are artifact checks, not Secure Boot signing, a boot test, or
+a node change.
 
 ## Native runtime stack releases
 
