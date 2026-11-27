@@ -1,0 +1,9 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -292,3 +292,5 @@
+ WORKDIR /src
+-RUN --mount=type=cache,target=/.cache,id=talos/.cache go mod download
++# Fetch modules needed by the build and generators on demand. The workspace
++# also lists tooling dependencies that are not needed to build the imager.
++ENV GOFLAGS=-mod=readonly
+ RUN --mount=type=cache,target=/.cache,id=talos/.cache go mod verify
