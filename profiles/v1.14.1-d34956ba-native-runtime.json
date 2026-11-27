@@ -1,0 +1,10 @@
+{
+  "imager": "ghcr.io/sylphxai/talos-installer@sha256:32911ffe67cf9cf23ed86e7d23c68768d0b1c5fb9b38ee9d999962e46491d0b3",
+  "installer": "ghcr.io/sylphxai/talos-installer@sha256:4529cbb167a9fd0c64eb2942c3acb729ee7537fdd35a3387827f8ac9aceeafe2",
+  "kata_extension": "ghcr.io/sylphxai/talos-installer@sha256:e6d0fcdf940290da23d31f4ce2ead0ce2fab6cc91d1a90bdcb4853d3357a7820",
+  "kubelet": "ghcr.io/sylphxai/talos-installer:v1.36.4-kubelet.v1.14.1.d34956ba5ec9e8a3c7c5952574badedbf2c9d161@sha256:1e949dc6a630672f15364991b78b6397dc03652bd2f47d75b37b9a3108184dab",
+  "kubelet_version": "v1.36.4",
+  "schema_version": 1,
+  "source_revision": "d34956ba5ec9e8a3c7c5952574badedbf2c9d161",
+  "talos_version": "v1.14.1"
+}

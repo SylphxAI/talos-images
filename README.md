@@ -60,6 +60,23 @@ Node configuration and rollout remain the responsibility of downstream
 infrastructure consumers; selecting this image alone does not enable lazy
 pulling for workloads.
 
+## Pinned native + stargz nested-KVM UKI
+
+To build the opt-in Talos v1.14.1 UKI with `kvm_amd.nested=1`:
+
+```bash
+gh workflow run build.yml -R SylphxAI/talos-images --ref main -f uki_nested_kvm=true
+```
+
+This mode accepts no stack overrides. It uses the exact native manifest and
+stargz v0.18.2 digest from [build 46009885306](https://github.com/SylphxAI/talos-images/actions/runs/46009885306).
+The default and reset-maintenance command lines in both emitted UKIs must each
+contain the setting once, and both initrds must include stargz. The UKIs remain
+unsigned like the baseline; this is not a Secure Boot signing or boot test.
+Each attempt publishes a separate non-latest release with a run receipt and
+`native-runtime-release.json`. Use its installer digest, not the tag, to pin a
+consumer. This workflow does not modify any cluster.
+
 ## Native runtime stack releases
 
 The managed microVM pattern is Namespace/Depot: customers do not select an OS,
