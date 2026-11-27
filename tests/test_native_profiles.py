@@ -40,6 +40,27 @@ class NativeProfilesTest(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertIn("reviewed", result.stderr)
 
+    def test_imager_patch_leaves_workspace_checksum_verification_enabled(self):
+        prefetch = "RUN --mount=type=cache,target=/.cache,id=talos/.cache go mod download"
+        verify = "RUN --mount=type=cache,target=/.cache,id=talos/.cache go mod verify"
+        upstream = "\n".join((
+            "COPY ./pkg/machinery/go.mod ./pkg/machinery/go.sum ./pkg/machinery/",
+            "COPY ./tools ./tools", "WORKDIR /src", prefetch, verify, "",
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            dockerfile = pathlib.Path(directory) / "Dockerfile"
+            patch = ROOT / "host-memory" / "patches" / "talos-imager.patch"
+            command = ["patch", "-p1", "--batch", "--forward", "--fuzz=0", "-i", patch]
+            dockerfile.write_text(upstream)
+            result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn(prefetch, dockerfile.read_text())
+            self.assertIn("ENV GOFLAGS=-mod=readonly", dockerfile.read_text())
+            self.assertIn(verify, dockerfile.read_text())
+            dockerfile.write_text(upstream.replace(prefetch, "RUN go mod download all"))
+            result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+
     def test_build_entrypoint_passes_the_selected_pair_to_each_target(self):
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         with tempfile.TemporaryDirectory() as directory:

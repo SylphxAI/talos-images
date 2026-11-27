@@ -30,10 +30,12 @@ else
   curl -fsSL --max-time 120 "https://codeload.github.com/siderolabs/talos/tar.gz/refs/tags/$TALOS_VERSION" -o "$temporary/talos.tar.gz"
   printf '%s  %s\n' "$TALOS_SHA256" "$temporary/talos.tar.gz" | sha256sum -c -
   tar -xzf "$temporary/talos.tar.gz" -C "$temporary"
+  talos_tree="$temporary/talos-${TALOS_VERSION#v}"
+  patch --directory "$talos_tree" --strip=1 --batch --forward --fuzz=0 < "$root/host-memory/patches/talos-imager.patch"
   # Use upstream's complete build arguments and core boot-asset graph. A local
   # OCI named context supplies the native package without an intermediate push
   # or a credential for another artifact repository.
-  make -C "$temporary/talos-${TALOS_VERSION#v}" target-imager PLATFORM=linux/amd64 \
+  make -C "$talos_tree" target-imager PLATFORM=linux/amd64 \
     "TAG=$TALOS_VERSION" "ABBREV_TAG=$TALOS_VERSION" "SHA=$SOURCE_SHA" "SOURCE_DATE_EPOCH=$source_epoch" \
     PKG_CONTAINERD=native-containerd PUSH=false \
     "TARGET_ARGS=--build-context=native-containerd=oci-layout://$temporary/containerd --label=org.opencontainers.image.source=https://github.com/SylphxAI/talos-images --label=org.opencontainers.image.revision=$SOURCE_SHA --output=type=oci,dest=$temporary/output.tar"
