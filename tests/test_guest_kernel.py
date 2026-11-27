@@ -1,15 +1,17 @@
-"""The guest kernel build is pinned, and its fragment is exactly what the
-cp-etcd-qos baseline needs. The compile itself runs on a build lease; this
-checks the inputs that decide what that compile produces."""
+"""Check guest kernel inputs, the vmlinux verification gate, and OCI wiring."""
 
 import hashlib
 import pathlib
 import re
+import subprocess
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCRIPT = (ROOT / "guest-kernel" / "build-kernel.sh").read_text()
+BUILDER = ROOT / "guest-kernel" / "build-kernel.sh"
+SCRIPT = BUILDER.read_text()
 FRAGMENT = (ROOT / "guest-kernel" / "qos.conf").read_text()
+NESTED_FRAGMENT = (ROOT / "guest-kernel" / "nested-kvm.conf").read_text()
 VENDOR = ROOT / "guest-kernel" / "vendor"
 
 # What infra/addons/cp-etcd-qos/manifests/qos.sh asks tc for.
@@ -22,6 +24,16 @@ NEEDED = {
 # cls_flower links against the actions framework, and a classid filter
 # installs the generic action. Both have to be built in with it.
 ALSO = {"CONFIG_NET_CLS_ACT": "actions", "CONFIG_NET_ACT_GACT": "generic action"}
+NESTED = {"CONFIG_VIRTUALIZATION", "CONFIG_KVM", "CONFIG_KVM_AMD", "CONFIG_KVM_INTEL",
+          "CONFIG_VHOST_MENU", "CONFIG_VHOST_NET"}
+DEPENDENCIES = {"CONFIG_KVM_X86", "CONFIG_VHOST", "CONFIG_TUN", "CONFIG_HIGH_RES_TIMERS",
+                "CONFIG_PREEMPT_NOTIFIERS"}
+INITCALLS = (
+    "sch_prio__0_433_prio_module_init6", "sch_htb__1_2165_htb_module_init6",
+    "sch_netem__2_1382_netem_module_init6", "cls_flower__3_3869_cls_fl_init6",
+    "kvm__4_14451_kvm_x86_init6", "kvm_amd__5_5623_svm_init6",
+    "kvm_intel__6_1073_vt_init6", "vhost_net__7_1882_vhost_net_init6",
+)
 
 
 def pin(name):
@@ -53,11 +65,57 @@ class GuestKernelTest(unittest.TestCase):
         self.assertEqual(len(pin("KATA_SHA256")), 64)
         self.assertEqual(len(pin("KERNEL_SHA256")), 64)
 
-    def test_symbol_check_names_the_four_qdisc_initcalls(self):
-        named = re.search(r"for name in ([a-z_ ]+); do", SCRIPT)
-        self.assertIsNotNone(named)
-        self.assertEqual(named.group(1).split(), ["sch_prio", "sch_htb", "sch_netem", "cls_flower"])
-        self.assertIn("__initcall__kmod_${name}__", SCRIPT)
+    def test_nested_fragment_only_requests_the_required_built_ins(self):
+        settings = [line for line in NESTED_FRAGMENT.splitlines() if line and not line.startswith("#")]
+        self.assertCountEqual(settings, [f"{option}=y" for option in NESTED])
+        merge = re.search(r"merge_config.sh[^\n]*\\\n[^\n]*", SCRIPT)
+        self.assertIsNotNone(merge)
+        self.assertIn('"$root/guest-kernel/qos.conf" "$root/guest-kernel/nested-kvm.conf"', merge.group())
+
+    def test_verify_requires_config_and_built_in_registration(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            path = pathlib.Path(scratch) / "src" / f"kata-linux-{pin('KERNEL_VERSION')}-{pin('CONFIG_VERSION')}"
+            path.mkdir(parents=True)
+            config = path / ".config"
+            good_config = "# CONFIG_MODULES is not set\n" + "".join(
+                f"{option}=y\n" for option in sorted(NEEDED.keys() | ALSO.keys() | NESTED | DEPENDENCIES)
+            )
+            config.write_text(good_config)
+
+            def write_elf(initcalls):
+                asm = ".text\n" + "".join(f"__initcall__kmod_{name}: .byte 0\n" for name in initcalls)
+                subprocess.run(["as", "-o", path / "vmlinux"], input=asm, text=True, check=True)
+
+            def verify():
+                return subprocess.run(["bash", BUILDER, "verify"], text=True, capture_output=True,
+                                      env={"WORK_DIR": scratch})
+
+            self.assertIn("no vmlinux", verify().stderr)
+            write_elf(INITCALLS)
+            result = verify()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config.write_text(good_config.replace("CONFIG_KVM_INTEL=y", "CONFIG_KVM_INTEL=m"))
+            result = verify()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not built in: CONFIG_KVM_INTEL", result.stderr)
+            config.write_text(good_config)
+            for name in INITCALLS:
+                with self.subTest(initcall=name):
+                    # Keep the correct module prefix but an unrelated function.
+                    write_elf([x if x != name else x + "_wrong" for x in INITCALLS])
+                    result = verify()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"vmlinux does not register {name.split('__')[0]}", result.stderr)
+
+    def test_published_kata_extension_uses_the_verified_kernel(self):
+        dockerfile = (ROOT / "host-memory" / "Dockerfile").read_text()
+        workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text()
+        target_path = "rootfs/usr/local/share/kata-containers/vmlinux.container"
+        self.assertIn("bash guest-kernel/build-kernel.sh verify", dockerfile)
+        self.assertIn(f"COPY --from=guest-kernel --chmod=0644 /vmlinux.container /{target_path}", dockerfile)
+        self.assertIn("push:\n    branches: [main]\n", workflow)
+        self.assertIn(f"tar -xOf - {target_path}", workflow)
+        self.assertIn('bash guest-kernel/build-kernel.sh symbols "$kernel"', workflow)
 
 
 if __name__ == "__main__":

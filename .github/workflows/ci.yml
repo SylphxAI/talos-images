@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   check:
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -37,7 +38,7 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
           ./actionlint -color
 
-      - name: Extension resolver tests cover both artifact modes
+      - name: Guest kernel and extension resolver tests
         run: python3 -m unittest discover -s tests -v
 
       - name: Extensions resolve for both modes of the default Talos version
@@ -57,6 +58,7 @@ jobs:
           done < <(sed -n 's/^ *- //p' extensions.yaml)
 
   native-runtime:
+    if: github.event.repository.visibility == 'public'
     strategy:
       fail-fast: false
       matrix:
@@ -77,7 +79,7 @@ jobs:
 
   # The one required check: fails unless every job above succeeded.
   ci-ok:
-    if: always()
+    if: always() && github.event.repository.visibility == 'public'
     needs: [check, native-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 2
