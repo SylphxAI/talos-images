@@ -160,6 +160,15 @@ one-node `machine.kubelet.image` setting; no shared deployment is retargeted.
 Its ordinary kubelet configuration stays unchanged, so the recorded effective
 configuration hash remains an actual readback, not a guessed post-change hash.
 
+Native release manifests with schema_version 2 support guard config version 2.
+Its SHA-256 covers the effective kubelet YAML bytes except that the generated
+staticPodURL loopback port is replaced with 0 and a NUL prefix domain-separates
+that hash input from raw YAML. Talos reassigns this port at boot.
+Other bytes remain bound, and the original YAML still supplies the budget
+inputs. Guard version 1 retains exact-byte checking for existing immutable
+node configs. To use v2, render fresh readback with a verified v2 release and
+install the paired artifacts and machine file together during a drained reboot.
+
 
 ## Immutable rollout and acceptance
 

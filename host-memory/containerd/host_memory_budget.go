@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ type nativeBudgetConfig struct {
 // hierarchy and node allocatable memory, before pinned defaulting.
 type nativeKubelet struct {
 	APIVersion                   string            `json:"apiVersion"`
+	StaticPodURL                 string            `json:"staticPodURL"`
 	Kind                         string            `json:"kind"`
 	CgroupRoot                   string            `json:"cgroupRoot"`
 	CgroupsPerQOS                *bool             `json:"cgroupsPerQOS"`
@@ -93,7 +95,7 @@ func (r *nativeBudgetReader) load() (*nativeKubelet, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parse native memory config: %w", err)
 	}
-	if config.Version != 1 || config.NodeIdentity == "" || !filepath.IsAbs(config.KubeletConfigPath) {
+	if (config.Version != 1 && config.Version != 2) || config.NodeIdentity == "" || !filepath.IsAbs(config.KubeletConfigPath) {
 		return nil, errors.New("invalid native memory config identity/version")
 	}
 	roots := slices.Clone(config.PodCgroupParents)
@@ -105,10 +107,6 @@ func (r *nativeBudgetReader) load() (*nativeKubelet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read effective kubelet config: %w", err)
 	}
-	sum := sha256.Sum256(kubeletData)
-	if hex.EncodeToString(sum[:]) != config.KubeletConfigSHA256 {
-		return nil, errors.New("effective kubelet configuration changed; immutable readback required")
-	}
 	jsonData, err := yaml.YAMLToJSONStrict(kubeletData)
 	if err != nil {
 		return nil, err
@@ -117,10 +115,46 @@ func (r *nativeBudgetReader) load() (*nativeKubelet, error) {
 	if err := json.Unmarshal(jsonData, &k); err != nil {
 		return nil, err
 	}
+	if config.Version == 2 {
+		kubeletData = stableTalosKubeletConfig(kubeletData, k.StaticPodURL)
+	}
+	sum := sha256.Sum256(kubeletData)
+	if hex.EncodeToString(sum[:]) != config.KubeletConfigSHA256 {
+		return nil, errors.New("effective kubelet configuration changed; immutable readback required")
+	}
 	if err := nativeKubeletDefaults(&k); err != nil {
 		return nil, err
 	}
 	return &k, nil
+}
+
+const talosStaticPodURLPrefix = "staticPodURL: http://127.0.0.1:"
+
+var talosStaticPodURLLine = regexp.MustCompile("^staticPodURL: http://127[.]0[.]0[.]1:([1-9][0-9]{0,4})$")
+
+// Talos binds its static pod server on 127.0.0.1:0 at startup. Only replace
+// the port of its exact generated line, when it is also the top-level field.
+// Keep this v2 wire format in sync with infra's renderer.
+func stableTalosKubeletConfig(data []byte, staticPodURL string) []byte {
+	lines := strings.Split(string(data), "\n")
+	matchIndex := -1
+	for i, line := range lines {
+		match := talosStaticPodURLLine.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		port, _ := strconv.Atoi(match[1])
+		if matchIndex != -1 || port > 65535 || strings.TrimPrefix(line, "staticPodURL: ") != staticPodURL {
+			return data
+		}
+		matchIndex = i
+	}
+	if matchIndex == -1 {
+		return data
+	}
+	lines[matchIndex] = talosStaticPodURLPrefix + "0"
+	// YAML forbids a raw NUL; separate this hash input from unnormalized bytes.
+	return []byte("\x00" + strings.Join(lines, "\n"))
 }
 
 func nativeQuantity(value string) (uint64, error) {

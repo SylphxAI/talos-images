@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -514,6 +515,43 @@ func (f *nativeBudgetFixture) kubelet(t *testing.T, kubelet string) {
 	nativeWrite(t, path, kubelet)
 	sum := sha256.Sum256([]byte(kubelet))
 	nativeWrite(t, f.reader.configPath, fmt.Sprintf(`{"version":1,"nodeIdentity":"worker","kubeletConfigPath":%q,"kubeletConfigSHA256":%q,"podCgroupParents":["/sylphx-besteffort","/kubepods"]}`, path, hex.EncodeToString(sum[:])))
+}
+
+// The fixed digest is also asserted by infra's renderer to catch wire drift.
+func TestNativeBudgetKubeletReadbackAcrossTalosBoots(t *testing.T) {
+	const first = talosKubelet + "staticPodURL: http://127.0.0.1:36289\nevictionHard:\n  memory.available: 5%\n"
+	const second = talosKubelet + "staticPodURL: http://127.0.0.1:49153\nevictionHard:\n  memory.available: 5%\n"
+	const stableDigest = "c7159be92dc6bef7e127fa2cea02fb77138a2ee9ef3fc1225844a5ac9fae0eee"
+	f := newNativeBudgetFixture(t, first)
+	path := filepath.Join(f.dir, "kubelet.yaml")
+	if _, err := f.reader.load(); err != nil {
+		t.Fatalf("v1 initial readback: %v", err)
+	}
+	nativeWrite(t, path, second)
+	if _, err := f.reader.load(); err == nil {
+		t.Fatal("v1 raw hash accepted a rebooted port")
+	}
+	nativeWrite(t, f.reader.configPath, fmt.Sprintf(`{"version":2,"nodeIdentity":"worker","kubeletConfigPath":%q,"kubeletConfigSHA256":%q,"podCgroupParents":["/sylphx-besteffort","/kubepods"]}`, path, stableDigest))
+	for _, raw := range []string{first, second} {
+		nativeWrite(t, path, raw)
+		k, err := f.reader.load()
+		if err != nil || k.SystemReserved["memory"] != "384Mi" || k.EvictionHard["memory.available"] != "5%" {
+			t.Fatalf("v2 must accept both boots with the same budget inputs: %+v, %v", k, err)
+		}
+	}
+	for _, edit := range [][2]string{
+		{"384Mi", "385Mi"}, {"cgroupRoot: /", "cgroupRoot: /other"}, {"5%", "6%"},
+		{"127.0.0.1", "127.0.0.2"}, {":49153", ":49153/pods"}, {":49153", ":0"}, {":49153", ":65536"},
+		{"staticPodURL:", "# staticPodURL:"},
+		{"staticPodURL: http://127.0.0.1:49153", "staticPodURL: http://127.0.0.1:49153\nstaticPodURL: http://127.0.0.1:49153"},
+	} {
+		t.Run(edit[1], func(t *testing.T) {
+			nativeWrite(t, path, strings.Replace(second, edit[0], edit[1], 1))
+			if _, err := f.reader.load(); err == nil {
+				t.Fatal("changed kubelet readback was accepted")
+			}
+		})
+	}
 }
 
 func (f *nativeBudgetFixture) cgroup(t *testing.T, name string, current, activeFile, inactiveFile, dirty, writeback uint64) {
