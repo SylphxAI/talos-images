@@ -24,8 +24,8 @@ NEEDED = {
 # cls_flower links against the actions framework, and a classid filter
 # installs the generic action. Both have to be built in with it.
 ALSO = {"CONFIG_NET_CLS_ACT": "actions", "CONFIG_NET_ACT_GACT": "generic action"}
-NESTED = {"CONFIG_VIRTUALIZATION", "CONFIG_KVM", "CONFIG_KVM_AMD", "CONFIG_KVM_INTEL",
-          "CONFIG_VHOST_MENU", "CONFIG_VHOST_NET"}
+NESTED = {"CONFIG_VIRTUALIZATION", "CONFIG_KVM", "CONFIG_KVM_IOAPIC", "CONFIG_KVM_AMD",
+          "CONFIG_KVM_INTEL", "CONFIG_VHOST_MENU", "CONFIG_VHOST_NET"}
 DEPENDENCIES = {"CONFIG_KVM_X86", "CONFIG_VHOST", "CONFIG_TUN", "CONFIG_HIGH_RES_TIMERS",
                 "CONFIG_PREEMPT_NOTIFIERS"}
 INITCALLS = (
@@ -34,6 +34,7 @@ INITCALLS = (
     "kvm__4_14451_kvm_x86_init6", "kvm_amd__5_5623_svm_init6",
     "kvm_intel__6_1073_vt_init6", "vhost_net__7_1882_vhost_net_init6",
 )
+IRQCHIP_PIT_SYMBOLS = ("kvm_pic_init", "kvm_ioapic_init", "kvm_create_pit")
 
 
 def pin(name):
@@ -82,8 +83,10 @@ class GuestKernelTest(unittest.TestCase):
             )
             config.write_text(good_config)
 
-            def write_elf(initcalls):
+            def write_elf(initcalls=INITCALLS, text_symbols=IRQCHIP_PIT_SYMBOLS, data_symbols=()):
                 asm = ".text\n" + "".join(f"__initcall__kmod_{name}: .byte 0\n" for name in initcalls)
+                asm += "".join(f"{name}: .byte 0\n" for name in text_symbols)
+                asm += ".data\n" + "".join(f"{name}: .byte 0\n" for name in data_symbols)
                 subprocess.run(["as", "-o", path / "vmlinux"], input=asm, text=True, check=True)
 
             def verify():
@@ -91,13 +94,16 @@ class GuestKernelTest(unittest.TestCase):
                                       env={"WORK_DIR": scratch})
 
             self.assertIn("no vmlinux", verify().stderr)
-            write_elf(INITCALLS)
+            write_elf()
             result = verify()
             self.assertEqual(result.returncode, 0, result.stderr)
-            config.write_text(good_config.replace("CONFIG_KVM_INTEL=y", "CONFIG_KVM_INTEL=m"))
-            result = verify()
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("not built in: CONFIG_KVM_INTEL", result.stderr)
+            for option, bad in (("CONFIG_KVM_INTEL", "CONFIG_KVM_INTEL=m"),
+                                ("CONFIG_KVM_IOAPIC", "# CONFIG_KVM_IOAPIC is not set")):
+                with self.subTest(option=option):
+                    config.write_text(good_config.replace(f"{option}=y", bad))
+                    result = verify()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"not built in: {option}", result.stderr)
             config.write_text(good_config)
             for name in INITCALLS:
                 with self.subTest(initcall=name):
@@ -106,6 +112,14 @@ class GuestKernelTest(unittest.TestCase):
                     result = verify()
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(f"vmlinux does not register {name.split('__')[0]}", result.stderr)
+            for name in IRQCHIP_PIT_SYMBOLS:
+                with self.subTest(symbol=name):
+                    # Near matches and exact names outside .text are not implementations.
+                    write_elf(text_symbols=[x if x != name else x + "_wrong" for x in IRQCHIP_PIT_SYMBOLS],
+                              data_symbols=[name])
+                    result = verify()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"vmlinux does not define {name}", result.stderr)
 
     def test_published_kata_extension_uses_the_verified_kernel(self):
         dockerfile = (ROOT / "host-memory" / "Dockerfile").read_text()

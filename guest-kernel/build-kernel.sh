@@ -14,7 +14,7 @@
 #
 #   guest-kernel/build-kernel.sh setup    download, merge config, oldconfig
 #   guest-kernel/build-kernel.sh build    compile vmlinux
-#   guest-kernel/build-kernel.sh verify   check .config and vmlinux initcalls
+#   guest-kernel/build-kernel.sh verify   check .config and vmlinux symbols
 #   guest-kernel/build-kernel.sh package  vmlinux plus its config, as a tar
 set -euo pipefail
 
@@ -190,9 +190,9 @@ verify_config() {
   [ -f "$config" ] || { echo "no $config; run setup first" >&2; exit 1; }
   for option in CONFIG_NET_SCH_PRIO CONFIG_NET_SCH_HTB CONFIG_NET_SCH_NETEM \
                 CONFIG_NET_CLS_ACT CONFIG_NET_ACT_GACT CONFIG_NET_CLS_FLOWER \
-                CONFIG_VIRTUALIZATION CONFIG_KVM CONFIG_KVM_X86 CONFIG_KVM_AMD \
-                CONFIG_KVM_INTEL CONFIG_VHOST_MENU CONFIG_VHOST CONFIG_VHOST_NET \
-                CONFIG_TUN CONFIG_HIGH_RES_TIMERS CONFIG_PREEMPT_NOTIFIERS; do
+                CONFIG_VIRTUALIZATION CONFIG_KVM CONFIG_KVM_X86 CONFIG_KVM_IOAPIC \
+                CONFIG_KVM_AMD CONFIG_KVM_INTEL CONFIG_VHOST_MENU CONFIG_VHOST \
+                CONFIG_VHOST_NET CONFIG_TUN CONFIG_HIGH_RES_TIMERS CONFIG_PREEMPT_NOTIFIERS; do
     if ! grep -qx "$option=y" "$config"; then
       echo "not built in: $option" >&2
       missing=1
@@ -203,15 +203,16 @@ verify_config() {
     missing=1
   fi
   [ "$missing" = 0 ]
-  echo "guest kernel config has QoS, KVM (AMD and Intel) and vhost-net built in"
+  echo "guest kernel config has QoS, KVM (AMD and Intel) with IRQCHIP/PIT, and vhost-net built in"
 }
 
 symbols() {
-  local vmlinux=${1:-$(kernel_tree)/vmlinux} entry module init names missing=0
+  local vmlinux=${1:-$(kernel_tree)/vmlinux} entry module init names symbol missing=0
   [ -f "$vmlinux" ] || { echo "no vmlinux; run build first" >&2; exit 1; }
   # Linux 6.18 names built-in device initcalls after their module and entry
   # point. The counter and source line vary; Intel's vt_init calls vmx_init.
-  names=$(nm --defined-only --format=posix "$vmlinux" | awk '$1 ~ /^__initcall__/ {print $1}')
+  names=$(nm --defined-only --format=posix "$vmlinux" |
+    awk '$1 ~ /^__initcall__/ || ($1 ~ /^kvm_/ && $2 ~ /^[Tt]$/) {print $1}')
   for entry in sch_prio:prio_module_init sch_htb:htb_module_init \
                sch_netem:netem_module_init cls_flower:cls_fl_init \
                kvm:kvm_x86_init kvm_amd:svm_init kvm_intel:vt_init vhost_net:vhost_net_init; do
@@ -219,6 +220,14 @@ symbols() {
     init=${entry#*:}
     if ! grep -Ex "__initcall__kmod_${module}__[0-9]+_[0-9]+_${init}6" <<< "$names"; then
       echo "vmlinux does not register $module ($init)" >&2
+      missing=1
+    fi
+  done
+  # Unlike the module initcalls, these are the functions that implement
+  # KVM_CREATE_IRQCHIP and KVM_CREATE_PIT2 when CONFIG_KVM_IOAPIC is set.
+  for symbol in kvm_pic_init kvm_ioapic_init kvm_create_pit; do
+    if ! grep -Fx "$symbol" <<< "$names"; then
+      echo "vmlinux does not define $symbol" >&2
       missing=1
     fi
   done
