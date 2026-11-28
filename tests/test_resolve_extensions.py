@@ -6,22 +6,27 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-KATA = "ghcr.io/siderolabs/kata-containers:release@sha256:kata"
-STARGZ = "ghcr.io/siderolabs/stargz-snapshotter:release@sha256:stargz"
+KATA = "ghcr.io/siderolabs/kata-containers:release@sha256:" + "a" * 64
+STARGZ = "ghcr.io/siderolabs/stargz-snapshotter:release@sha256:" + "b" * 64
+GVISOR = "ghcr.io/siderolabs/gvisor:release@sha256:" + "c" * 64
 
 
 class ResolveExtensionsTest(unittest.TestCase):
-    def resolve(self, stargz="false", override="", missing_stargz=False, native=None, **settings):
+    def resolve(self, stargz="false", override="", missing_stargz=False, native=None,
+                gvisor="false", gvisor_ref=GVISOR, **settings):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             catalog = [{"name": "siderolabs/kata-containers", "ref": KATA.split("@")[0], "digest": KATA.split("@")[1]}]
             if not missing_stargz:
                 catalog.append({"name": "siderolabs/stargz-snapshotter", "ref": STARGZ.split("@")[0], "digest": STARGZ.split("@")[1]})
+            if gvisor_ref is not None:
+                ref, digest = gvisor_ref.split("@")
+                catalog.append({"name": "siderolabs/gvisor", "ref": ref, "digest": digest})
             (path / "catalog.json").write_text(json.dumps(catalog))
             (path / "curl").write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$CALLS"\n/bin/cat "$CATALOG_FIXTURE"\n')
             (path / "curl").chmod(0o755)
             env = dict(os.environ, PATH=f"{path}:{os.environ['PATH']}",
-                       TALOS_VERSION="v1.14.1", STARGZ_ENABLED=stargz,
+                       TALOS_VERSION="v1.14.1", STARGZ_ENABLED=stargz, GVISOR_ENABLED=gvisor,
                        KATA_EXTENSION_IMAGE=override, GITHUB_OUTPUT=str(path / "output"),
                        CATALOG_FIXTURE=str(path / "catalog.json"), CALLS=str(path / "calls"),
                        UKI_NESTED_KVM="false", NATIVE_HOST_MEMORY="false")
@@ -41,6 +46,7 @@ class ResolveExtensionsTest(unittest.TestCase):
         self.assertEqual(output["artifact_tag"], "v1.14.1")
         self.assertEqual(output["make_latest"], "true")
         self.assertEqual(output["stargz_ref"], "")
+        self.assertEqual(output["gvisor_ref"], "")
         self.assertIn("/version/v1.14.1/extensions/official", calls)
 
     def test_stargz_resolves_digest_and_distinct_names(self):
@@ -50,6 +56,39 @@ class ResolveExtensionsTest(unittest.TestCase):
         self.assertEqual(output["stargz_ref"], STARGZ)
         self.assertEqual(output["artifact_tag"], "v1.14.1-stargz")
         self.assertEqual(output["make_latest"], "false")
+
+    def test_gvisor_alone_resolves_catalog_with_kata_override(self):
+        override = "custom/kata:tag@sha256:override"
+        result, output, calls = self.resolve(gvisor="true", override=override)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output["flags"].split(), ["--system-extension-image", override, "--system-extension-image", GVISOR])
+        self.assertEqual(output["gvisor_ref"], GVISOR)
+        self.assertEqual(output["stargz_ref"], "")
+        self.assertEqual(output["artifact_tag"], "v1.14.1-gvisor")
+        self.assertEqual(output["make_latest"], "false")
+        self.assertIn("/version/v1.14.1/extensions/official", calls)
+
+    def test_fr_native_kata_with_both_factory_extensions(self):
+        release = {**self.native_release(), "talos_version": "v1.14.2"}
+        result, output, calls = self.resolve(stargz="true", gvisor="true", native=release, TALOS_VERSION="v1.14.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output["flags"].split(), ["--system-extension-image", release["kata_extension"],
+                                                   "--system-extension-image", STARGZ, "--system-extension-image", GVISOR])
+        self.assertEqual(output["gvisor_ref"], GVISOR)
+        self.assertEqual(output["stargz_ref"], STARGZ)
+        self.assertEqual(output["imager_ref"], release["imager"])
+        self.assertEqual(output["kubelet_ref"], release["kubelet"])
+        self.assertEqual(output["artifact_tag"], f"v1.14.2-host-memory-{release['source_revision']}-stargz-gvisor")
+        self.assertEqual(output["make_latest"], "false")
+        self.assertEqual(calls.splitlines(), ["-fsSL https://factory.talos.dev/version/v1.14.2/extensions/official"])
+
+    def test_missing_or_unpinned_gvisor_fails_before_publication(self):
+        for ref in (None, "ghcr.io/siderolabs/gvisor:release@", "ghcr.io/siderolabs/gvisor:release@sha256:short"):
+            with self.subTest(ref=ref):
+                result, output, _ = self.resolve(gvisor="true", gvisor_ref=ref)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, {})
+                self.assertIn("no siderolabs/gvisor with a valid pinned reference", result.stderr)
 
     def test_override_still_resolves_stargz_from_release_catalog(self):
         result, output, calls = self.resolve("true", "custom/kata:tag@sha256:override")
@@ -113,6 +152,7 @@ class ResolveExtensionsTest(unittest.TestCase):
                                                   "--extra-kernel-arg", "kvm_amd.nested=1"])
         self.assertEqual(output["stargz_ref"], "")
         self.assertEqual(output["kubelet_ref"], "")
+        self.assertEqual(output["gvisor_ref"], "")
         self.assertNotIn("native_manifest", output)
         self.assertEqual(output["make_latest"], "false")
         self.assertEqual(output["artifact_tag"], "v1.14.1-stock-uki-nested-kvm-100-2")
@@ -132,7 +172,8 @@ class ResolveExtensionsTest(unittest.TestCase):
 
     def test_nested_uki_rejects_other_stacks_before_publication(self):
         for field, value in {"TALOS_VERSION": "v1.14.2", "NATIVE_HOST_MEMORY": "true", "STARGZ_ENABLED": "true",
-                             "KATA_EXTENSION_IMAGE": KATA, "NATIVE_RUNTIME_RELEASE": "{}"}.items():
+                             "GVISOR_ENABLED": "true", "KATA_EXTENSION_IMAGE": KATA,
+                             "NATIVE_RUNTIME_RELEASE": "{}"}.items():
             with self.subTest(field=field):
                 result, output, calls = self.stock_nested(**{field: value})
                 self.assertNotEqual(result.returncode, 0)

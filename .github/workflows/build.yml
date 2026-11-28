@@ -26,6 +26,11 @@ on:
         type: boolean
         default: false
         required: false
+      gvisor:
+        description: "Include the release-compatible gVisor extension in a separate -gvisor artifact variant"
+        type: boolean
+        default: false
+        required: false
       uki_nested_kvm:
         description: "Build the pinned stock v1.14.1 + Kata 3.32.0 nested-KVM UKI (main only, separate release)"
         type: boolean
@@ -36,6 +41,7 @@ env:
   TALOS_VERSION: ${{ inputs.talos_version || 'v1.14.1' }}
   KATA_EXTENSION_IMAGE: ${{ inputs.kata_extension_image || '' }}
   STARGZ_ENABLED: ${{ inputs.stargz && 'true' || 'false' }}
+  GVISOR_ENABLED: ${{ inputs.gvisor && 'true' || 'false' }}
   NATIVE_RUNTIME_RELEASE: ${{ inputs.native_runtime_release || '' }}
   NATIVE_HOST_MEMORY: ${{ inputs.native_host_memory && 'true' || 'false' }}
   UKI_NESTED_KVM: ${{ inputs.uki_nested_kvm && 'true' || 'false' }}
@@ -215,7 +221,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.ext.outputs.artifact_tag }}
-          target_commitish: ${{ inputs.uki_nested_kvm && github.sha || '' }}
+          target_commitish: ${{ (inputs.uki_nested_kvm || inputs.gvisor) && github.sha || '' }}
           name: Talos ${{ steps.ext.outputs.artifact_tag }}
           body: |
             Custom Talos image with extensions:
@@ -223,6 +229,7 @@ jobs:
             - Core imager: `${{ steps.ext.outputs.imager_ref }}`
             - Native kubelet (empty for stock builds): `${{ steps.ext.outputs.kubelet_ref }}`
             - stargz (empty when disabled): `${{ steps.ext.outputs.stargz_ref }}`
+            - gVisor (empty when disabled): `${{ steps.ext.outputs.gvisor_ref }}`
 
             Build receipt: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
 
