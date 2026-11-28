@@ -170,14 +170,30 @@ class ResolveExtensionsTest(unittest.TestCase):
                 self.assertEqual(output, {})
                 self.assertEqual(calls, "")
 
+    def test_fr1_nested_uki_uses_exact_amd64_factory_set_without_native_components(self):
+        result, output, calls = self.stock_nested(TALOS_VERSION="v1.14.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, "")
+        self.assertEqual(output["kubelet_ref"], "")
+        self.assertEqual(output["make_latest"], "false")
+        self.assertEqual(output["artifact_tag"], "v1.14.2-stock-uki-nested-kvm-fr1-100-2")
+        self.assertEqual(output["imager_ref"], "ghcr.io/siderolabs/imager@sha256:a09ccdeeffd8e5b5cce3d4a23599dfd527ff9043242a18c1bff45f469cec3cbe")
+        self.assertEqual(output["stargz_ref"], "ghcr.io/siderolabs/stargz-snapshotter@sha256:be40f902374211bc841682e5899f6268b2529c61f7fc56f187b2e0cd8e34342a")
+        self.assertEqual(output["gvisor_ref"], "ghcr.io/siderolabs/gvisor@sha256:93fd4332e0ae8c9f4a51fe8590eba16a1ffc282bac836ceaae75e6fbbfddc2d7")
+        self.assertEqual(output["flags"].split(), ["--system-extension-image", output["ref"],
+                                                  "--system-extension-image", output["stargz_ref"],
+                                                  "--system-extension-image", output["gvisor_ref"],
+                                                  "--base-installer-image", "ghcr.io/siderolabs/installer-base@sha256:90472c8dac7a0d79742951057c0bdd26e8f0e0027d837c48723666b6b6d50d61",
+                                                  "--extra-kernel-arg", "kvm_amd.nested=1"])
+
     def test_nested_uki_rejects_other_stacks_before_publication(self):
-        for field, value in {"TALOS_VERSION": "v1.14.2", "NATIVE_HOST_MEMORY": "true", "STARGZ_ENABLED": "true",
+        for field, value in {"TALOS_VERSION": "v1.14.3", "NATIVE_HOST_MEMORY": "true", "STARGZ_ENABLED": "true",
                              "GVISOR_ENABLED": "true", "KATA_EXTENSION_IMAGE": KATA,
                              "NATIVE_RUNTIME_RELEASE": "{}"}.items():
             with self.subTest(field=field):
                 result, output, calls = self.stock_nested(**{field: value})
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("requires Talos v1.14.1", result.stderr)
+                self.assertIn("the stock nested UKI profile", result.stderr)
                 self.assertEqual(output, {})
                 self.assertEqual(calls, "")
 

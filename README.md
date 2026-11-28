@@ -81,16 +81,25 @@ To build the opt-in Talos v1.14.1 image with `kvm_amd.nested=1`:
 gh workflow run build.yml -R SylphxAI/talos-images --ref main -f uki_nested_kvm=true
 ```
 
-This dispatch rejects alternate versions, Kata overrides, native runtime inputs,
-stargz and gVisor. It uses the pinned upstream Talos imager and installer base. Its only
-system extension is upstream Kata 3.32.0 with `vmlinux.container` replaced by the
-shared, verified guest ELF; the Kata shim, VMM, guest rootfs and configuration
-are stock. Both emitted UKIs must contain the exact AMD argument once in each
+For stock Talos v1.14.2 with the FR-1 extension set, select the version explicitly:
+
+```bash
+gh workflow run build.yml -R SylphxAI/talos-images --ref main -f uki_nested_kvm=true -f talos_version=v1.14.2
+```
+
+Both profiles use a pinned upstream imager and installer base and reject native
+runtime and extension overrides. The v1.14.1 profile contains only Kata. The
+v1.14.2 profile also includes Factory stargz v0.18.2 and gVisor 20260831.0;
+its base rootfs must match the FR-1 Factory installer byte for byte.
+Both use upstream Kata 3.32.0 with only `vmlinux.container` replaced by the
+verified guest ELF. The Kata shim, VMM, guest rootfs and configuration are stock.
+Both emitted UKIs must contain the exact AMD argument once in each
 of their default and reset-maintenance command lines, and both embedded Kata
 kernels must match the published extension's ELF digest.
 
 The run publishes a non-latest release and GHCR installer under
-`v1.14.1-stock-uki-nested-kvm-<run-id>-<run-attempt>`. Download
+`v1.14.1-stock-uki-nested-kvm-<run-id>-<run-attempt>` or
+`v1.14.2-stock-uki-nested-kvm-fr1-<run-id>-<run-attempt>`. Download
 `stock-nested-release.json` from that exact release for the installer digest,
 input pins, metal SHA-256, guest ELF SHA-256, source revision and run attempt.
 `stock-nested-verification.txt` records the ELF header and initcalls read back
