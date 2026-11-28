@@ -36,7 +36,7 @@ class StockNestedBuildTest(unittest.TestCase):
                        TALOS_VERSION="v1.14.1", GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2",
                        NATIVE_HOST_MEMORY="false", NATIVE_RUNTIME_RELEASE="", KATA_EXTENSION_IMAGE="",
                        STARGZ_ENABLED="false", GITHUB_OUTPUT=str(scratch / "output"), RUNNER_TEMP=directory)
-            for key, value in {"TALOS_VERSION": "v1.14.2", "NATIVE_HOST_MEMORY": "true", "NATIVE_RUNTIME_RELEASE": "{}",
+            for key, value in {"TALOS_VERSION": "v1.14.3", "NATIVE_HOST_MEMORY": "true", "NATIVE_RUNTIME_RELEASE": "{}",
                                "KATA_EXTENSION_IMAGE": STOCK_KATA_BASE, "STARGZ_ENABLED": "true"}.items():
                 with self.subTest(key=key):
                     result = subprocess.run(["bash", "scripts/build-stock-nested-kata.sh"], cwd=ROOT,

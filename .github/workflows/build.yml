@@ -32,7 +32,7 @@ on:
         default: false
         required: false
       uki_nested_kvm:
-        description: "Build the pinned stock v1.14.1 + Kata 3.32.0 nested-KVM UKI (main only, separate release)"
+        description: "Build the pinned stock nested-KVM UKI (v1.14.1 Kata-only; v1.14.2 FR-1; main only)"
         type: boolean
         default: false
         required: false
@@ -173,7 +173,7 @@ jobs:
           crane export - - < /tmp/talos-installer/installer-amd64.tar | tar -xOf - usr/install/amd64/vmlinuz.efi > "$scratch/installer.efi"
           {
             cat "$RUNNER_TEMP/stock-nested-guest-elf.txt"
-            /usr/bin/python3 scripts/verify-stock-nested-uki.py "$scratch/metal.efi" "$scratch/installer.efi" "$GUEST_ELF_SHA256"
+            /usr/bin/python3 scripts/verify-stock-nested-uki.py "$scratch/metal.efi" "$scratch/installer.efi" "$GUEST_ELF_SHA256" "$TALOS_VERSION"
           } | tee /tmp/talos-out/stock-nested-verification.txt | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Push installer to GHCR
@@ -210,10 +210,12 @@ jobs:
             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
             --arg imager "$IMAGER" --arg base "$STOCK_NESTED_INSTALLER_BASE" --arg installer "$INSTALLER" \
             --arg kata "$KATA" --arg kata_base "$STOCK_NESTED_KATA_BASE" --arg elf "$GUEST_ELF_SHA256" \
+            --arg factory "$STOCK_NESTED_FACTORY_BASELINE" --arg stargz "$STOCK_NESTED_STARGZ" --arg gvisor "$STOCK_NESTED_GVISOR" \
             --arg metal "$(sha256sum metal-amd64.raw.zst | cut -d' ' -f1)" \
             '{schema_version:1,artifact_tag:$tag,talos_version:$version,source_revision:$source,build_run:$run,
               imager:$imager,installer_base:$base,installer:$installer,kata_base:$kata_base,kata_extension:$kata,
-              guest_elf_sha256:$elf,metal_sha256:$metal,kernel_arg:"kvm_amd.nested=1"}' > stock-nested-release.json
+              guest_elf_sha256:$elf,metal_sha256:$metal,kernel_arg:"kvm_amd.nested=1"}
+              + (if $factory == "" then {} else {factory_baseline:$factory,stargz_extension:$stargz,gvisor_extension:$gvisor} end)' > stock-nested-release.json
           cat stock-nested-release.json
           printf 'receipt=%s\nproof=%s\n' "$PWD/stock-nested-release.json" "$PWD/stock-nested-verification.txt" >> "$GITHUB_OUTPUT"
 

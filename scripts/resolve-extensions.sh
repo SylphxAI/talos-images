@@ -9,11 +9,15 @@ if [ "${UKI_NESTED_KVM:-false}" = true ]; then
     echo '::error::the stock nested UKI profile requires its built Kata digest' >&2
     exit 1
   fi
+  flags=" --system-extension-image $kata_ref"
+  for ext in "$STOCK_NESTED_STARGZ" "$STOCK_NESTED_GVISOR"; do
+    [[ -z "$ext" ]] || flags+=" --system-extension-image $ext"
+  done
   {
-    printf '%s\n' "ref=$kata_ref" 'stargz_ref=' 'gvisor_ref=' 'kubelet_ref='
+    printf '%s\n' "ref=$kata_ref" "stargz_ref=$STOCK_NESTED_STARGZ" "gvisor_ref=$STOCK_NESTED_GVISOR" 'kubelet_ref='
     printf '%s\n' "imager_ref=$STOCK_NESTED_IMAGER" "artifact_tag=$STOCK_NESTED_TAG" 'make_latest=false'
-    printf 'flags= --system-extension-image %s --base-installer-image %s --extra-kernel-arg kvm_amd.nested=1\n' \
-      "$kata_ref" "$STOCK_NESTED_INSTALLER_BASE"
+    printf 'flags=%s --base-installer-image %s --extra-kernel-arg kvm_amd.nested=1\n' \
+      "$flags" "$STOCK_NESTED_INSTALLER_BASE"
   } >> "$GITHUB_OUTPUT"
   exit 0
 fi
