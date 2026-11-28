@@ -10,7 +10,7 @@ if [ "${UKI_NESTED_KVM:-false}" = true ]; then
     exit 1
   fi
   {
-    printf '%s\n' "ref=$kata_ref" 'stargz_ref=' 'kubelet_ref='
+    printf '%s\n' "ref=$kata_ref" 'stargz_ref=' 'gvisor_ref=' 'kubelet_ref='
     printf '%s\n' "imager_ref=$STOCK_NESTED_IMAGER" "artifact_tag=$STOCK_NESTED_TAG" 'make_latest=false'
     printf 'flags= --system-extension-image %s --base-installer-image %s --extra-kernel-arg kvm_amd.nested=1\n' \
       "$kata_ref" "$STOCK_NESTED_INSTALLER_BASE"
@@ -35,7 +35,7 @@ fi
 
 CATALOG="https://factory.talos.dev/version/${TALOS_VERSION}/extensions/official"
 CATALOG_JSON=""
-if [ -z "${KATA_EXTENSION_IMAGE:-}" ] || [ "${STARGZ_ENABLED:-false}" = true ]; then
+if [ -z "${KATA_EXTENSION_IMAGE:-}" ] || [ "${STARGZ_ENABLED:-false}" = true ] || [ "${GVISOR_ENABLED:-false}" = true ]; then
   CATALOG_JSON=$(curl -fsSL "${CATALOG}")
 fi
 
@@ -44,8 +44,8 @@ catalog_ref() {
   ref=$(jq -r --arg name "$name" '
     [.[] | select(.name == $name) | "\(.ref)@\(.digest)"][0] // empty
   ' <<< "$CATALOG_JSON")
-  if [ -z "$ref" ] || [ "$ref" = "@" ]; then
-    echo "::error::no ${name} in the factory catalog for ${TALOS_VERSION} (${CATALOG})" >&2
+  if [[ ! "$ref" =~ ^[a-z0-9./_-]+:[a-zA-Z0-9._-]+@sha256:[0-9a-f]{64}$ ]]; then
+    echo "::error::no ${name} with a valid pinned reference in the factory catalog for ${TALOS_VERSION} (${CATALOG})" >&2
     return 1
   fi
   printf '%s' "$ref"
@@ -76,9 +76,18 @@ if [ "${STARGZ_ENABLED:-false}" = true ]; then
   MAKE_LATEST=false
 fi
 
+GVISOR_REF=""
+if [ "${GVISOR_ENABLED:-false}" = true ]; then
+  GVISOR_REF=$(catalog_ref siderolabs/gvisor)
+  FLAGS="${FLAGS} --system-extension-image ${GVISOR_REF}"
+  ARTIFACT_TAG="${ARTIFACT_TAG}-gvisor"
+  MAKE_LATEST=false
+fi
+
 {
   echo "ref=${KATA_REF}"
   echo "stargz_ref=${STARGZ_REF}"
+  echo "gvisor_ref=${GVISOR_REF}"
   echo "imager_ref=${IMAGER_REF}"
   echo "kubelet_ref=${KUBELET_REF}"
   echo "flags=${FLAGS}"

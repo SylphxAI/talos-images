@@ -40,7 +40,7 @@ jobs:
       - name: Guest kernel and extension resolver tests
         run: python3 -m unittest discover -s tests -v
 
-      - name: Extensions resolve for both modes of the default Talos version
+      - name: Default, stargz and combined gVisor variants resolve against Factory
         run: |
           set -euo pipefail
           version=$(sed -n "s/.*inputs.talos_version || '\(v[0-9.]*\)'.*/\1/p" .github/workflows/build.yml | head -1)
@@ -49,7 +49,14 @@ jobs:
             TALOS_VERSION="$version" STARGZ_ENABLED="$mode" KATA_EXTENSION_IMAGE="" \
               GITHUB_OUTPUT="$RUNNER_TEMP/extensions-$mode" bash scripts/resolve-extensions.sh
           done
+          TALOS_VERSION=v1.14.2 STARGZ_ENABLED=true GVISOR_ENABLED=true KATA_EXTENSION_IMAGE="" \
+            GITHUB_OUTPUT="$RUNNER_TEMP/extensions-fr" bash scripts/resolve-extensions.sh
           curl -sL https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz | tar -xz crane
+          for key in ref stargz_ref gvisor_ref; do
+            ext=$(sed -n "s/^$key=//p" "$RUNNER_TEMP/extensions-fr")
+            test -n "$ext"
+            ./crane digest "$ext" >/dev/null
+          done
           while IFS= read -r ext; do
             [ -z "$ext" ] && continue
             ./crane digest "$ext" >/dev/null || { echo "::error::extension ${ext} does not resolve"; exit 1; }

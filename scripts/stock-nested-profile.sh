@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Closed composition for the stock nested-KVM dispatch.
 if [[ "$TALOS_VERSION" != v1.14.1 || -n "${NATIVE_RUNTIME_RELEASE:-}${KATA_EXTENSION_IMAGE:-}" ||
-      "${NATIVE_HOST_MEMORY:-false}" == true || "${STARGZ_ENABLED:-false}" == true ]]; then
-  echo '::error::the stock nested UKI profile requires Talos v1.14.1 with no native, Kata or stargz overrides' >&2
+      "${NATIVE_HOST_MEMORY:-false}" == true || "${STARGZ_ENABLED:-false}" == true || "${GVISOR_ENABLED:-false}" == true ]]; then
+  echo '::error::the stock nested UKI profile requires Talos v1.14.1 with no native, Kata, stargz or gVisor overrides' >&2
   return 1
 fi
 if [[ ! "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ || ! "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]]; then

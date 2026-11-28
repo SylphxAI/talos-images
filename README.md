@@ -56,6 +56,19 @@ Kata-only artifacts or become the latest release. Its disk-image URL is:
 https://github.com/SylphxAI/talos-images/releases/download/{talos-version}-stargz/metal-amd64.raw.zst
 ```
 
+Set `gvisor=true` to add the digest-pinned `siderolabs/gvisor` extension from the
+same catalog. This adds `-gvisor` after any `-stargz` suffix and never becomes
+the latest release. To build Talos v1.14.2 with both extensions and the patched
+Kata guest from the native runtime build:
+
+```bash
+gh workflow run build.yml -R SylphxAI/talos-images --ref main \
+  -f talos_version=v1.14.2 -f native_host_memory=true -f stargz=true -f gvisor=true
+```
+
+Omit `native_host_memory` to use the stock Kata from the Factory catalog unless
+a separate Kata image or native stack manifest is supplied.
+
 Node configuration and rollout remain the responsibility of downstream
 infrastructure consumers; selecting this image alone does not enable lazy
 pulling for workloads.
@@ -69,7 +82,7 @@ gh workflow run build.yml -R SylphxAI/talos-images --ref main -f uki_nested_kvm=
 ```
 
 This dispatch rejects alternate versions, Kata overrides, native runtime inputs,
-and stargz. It uses the pinned upstream Talos imager and installer base. Its only
+stargz and gVisor. It uses the pinned upstream Talos imager and installer base. Its only
 system extension is upstream Kata 3.32.0 with `vmlinux.container` replaced by the
 shared, verified guest ELF; the Kata shim, VMM, guest rootfs and configuration
 are stock. Both emitted UKIs must contain the exact AMD argument once in each
